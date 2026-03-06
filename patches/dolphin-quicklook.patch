@@ -1,3 +1,28 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d639f6568..ba44b2a64 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -56,6 +56,8 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
+     Widgets
+     Gui
+     DBus
++    Multimedia
++    MultimediaWidgets
+ )
+ 
+ if (Qt6Gui_VERSION VERSION_GREATER_EQUAL "6.10.0")
+@@ -113,6 +115,11 @@ if(PackageKitQt6_FOUND)
+     set(HAVE_PACKAGEKIT TRUE)
+ endif()
+ 
++find_package(PkgConfig QUIET)
++if(PkgConfig_FOUND)
++    pkg_check_modules(POPPLER_QT6 poppler-qt6)
++endif()
++
+ find_package(KF6FileMetaData ${KF6_MIN_VERSION})
+ set_package_properties(KF6FileMetaData PROPERTIES
+                        URL "https://projects.kde.org/kfilemetadata"
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 4faabe9d5..023f0e4d5 100644
 --- a/src/CMakeLists.txt
@@ -110,10 +135,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..2ac71245e
+index 000000000..9314cb954
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,507 @@
+@@ -0,0 +1,515 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -128,6 +153,7 @@ index 000000000..2ac71245e
 +#include <QKeyEvent>
 +#include <QLabel>
 +#include <QMediaPlayer>
++#include <QMessageBox>
 +#include <QMimeDatabase>
 +#include <QMouseEvent>
 +#include <QPainter>
@@ -382,6 +408,13 @@ index 000000000..2ac71245e
 +    }
 +
 +    if (!loaded) {
++        if (mimeType == QLatin1String("image/heif") || mimeType == QLatin1String("image/heic")) {
++            QMessageBox::warning(parentWidget(),
++                QStringLiteral("HEIF Support"),
++                QStringLiteral("Cannot open HEIF/HEIC files.\n\n"
++                    "Please install libheif:\n"
++                    "  sudo pacman -S libheif"));
++        }
 +        return;
 +    }
 +
