@@ -1,28 +1,3 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d639f6568..ba44b2a64 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -56,6 +56,8 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
-     Widgets
-     Gui
-     DBus
-+    Multimedia
-+    MultimediaWidgets
- )
- 
- if (Qt6Gui_VERSION VERSION_GREATER_EQUAL "6.10.0")
-@@ -113,6 +115,11 @@ if(PackageKitQt6_FOUND)
-     set(HAVE_PACKAGEKIT TRUE)
- endif()
- 
-+find_package(PkgConfig QUIET)
-+if(PkgConfig_FOUND)
-+    pkg_check_modules(POPPLER_QT6 poppler-qt6)
-+endif()
-+
- find_package(KF6FileMetaData ${KF6_MIN_VERSION})
- set_package_properties(KF6FileMetaData PROPERTIES
-                        URL "https://projects.kde.org/kfilemetadata"
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 4faabe9d5..023f0e4d5 100644
 --- a/src/CMakeLists.txt
@@ -51,7 +26,7 @@ index 4faabe9d5..023f0e4d5 100644
      target_link_libraries(
          dolphinprivate PUBLIC
 diff --git a/src/views/dolphinview.cpp b/src/views/dolphinview.cpp
-index b01833d69..295529c28 100644
+index b01833d69..ec87e1b27 100644
 --- a/src/views/dolphinview.cpp
 +++ b/src/views/dolphinview.cpp
 @@ -27,6 +27,7 @@
@@ -84,7 +59,20 @@ index b01833d69..295529c28 100644
      loadDirectory(url);
  }
  
-@@ -1127,6 +1136,13 @@ void DolphinView::slotItemActivated(int index)
+@@ -1045,6 +1054,12 @@ bool DolphinView::eventFilter(QObject *watched, QEvent *event)
+         }
+         break;
+ 
++    case QEvent::Resize:
++        if (watched == m_container && m_quickLookOverlay && m_quickLookOverlay->isPreviewActive()) {
++            m_quickLookOverlay->resize(m_container->size());
++        }
++        break;
++
+     case QEvent::ToolTip: {
+         const auto helpEvent = static_cast<QHelpEvent *>(event);
+         if (tryShowNameToolTip(helpEvent)) {
+@@ -1127,6 +1142,13 @@ void DolphinView::slotItemActivated(int index)
  
      const KFileItem item = m_model->fileItem(index);
      if (!item.isNull()) {
@@ -122,10 +110,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..ad9577dcd
+index 000000000..760e8a010
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,428 @@
+@@ -0,0 +1,452 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -134,6 +122,7 @@ index 000000000..ad9577dcd
 +
 +#include "quicklookoverlay.h"
 +
++#include <QApplication>
 +#include <QAudioOutput>
 +#include <QEasingCurve>
 +#include <QImageReader>
@@ -148,6 +137,15 @@ index 000000000..ad9577dcd
 +#include <QResizeEvent>
 +#include <QVideoFrame>
 +#include <QVideoSink>
++
++namespace {
++    constexpr int CornerRadius = 6;
++    constexpr int ShadowOffset = 4;
++    constexpr int TextSpacing = 12;
++    constexpr int TextHeight = 30;
++    constexpr int BgAlphaMax = 180;
++    constexpr int ShadowAlphaMax = 80;
++}
 +
 +#ifdef HAVE_POPPLER
 +#include <poppler-qt6.h>
@@ -276,6 +274,12 @@ index 000000000..ad9577dcd
 +    m_mediaPlayer->setSource(fileUrl);
 +    m_mediaPlayer->setLoops(QMediaPlayer::Infinite);
 +
++    connect(m_mediaPlayer, &QMediaPlayer::errorOccurred, this, [this]() {
++        m_active = false;
++        cleanupVideo();
++        hide();
++    });
++
 +    connect(m_videoSink, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame &frame) {
 +        QVideoFrame f = frame;
 +        if (!f.isValid()) {
@@ -293,6 +297,9 @@ index 000000000..ad9577dcd
 +            m_videoPhase = VideoPhase::Animating;
 +            m_mediaPlayer->pause();
 +
++            if (!parentWidget()) {
++                return;
++            }
 +            move(0, 0);
 +            resize(parentWidget()->size());
 +            show();
@@ -316,15 +323,15 @@ index 000000000..ad9577dcd
 +{
 +    if (m_mediaPlayer) {
 +        m_mediaPlayer->stop();
-+        delete m_mediaPlayer;
++        m_mediaPlayer->deleteLater();
 +        m_mediaPlayer = nullptr;
 +    }
 +    if (m_videoSink) {
-+        delete m_videoSink;
++        m_videoSink->deleteLater();
 +        m_videoSink = nullptr;
 +    }
 +    if (m_audioOutput) {
-+        delete m_audioOutput;
++        m_audioOutput->deleteLater();
 +        m_audioOutput = nullptr;
 +    }
 +}
@@ -359,6 +366,9 @@ index 000000000..ad9577dcd
 +    m_currentUrl = fileUrl;
 +    m_active = true;
 +
++    if (!parentWidget()) {
++        return;
++    }
 +    move(0, 0);
 +    resize(parentWidget()->size());
 +    show();
@@ -401,7 +411,7 @@ index 000000000..ad9577dcd
 +    update();
 +
 +    if (progress >= 1.0 && m_animation->direction() == QAbstractAnimation::Forward) {
-+        if (m_contentType == ContentType::Video && m_videoPhase == VideoPhase::Animating) {
++        if (m_contentType == ContentType::Video && m_videoPhase == VideoPhase::Animating && m_mediaPlayer) {
 +            // Thumbnail animation done — switch to live playback
 +            m_videoPhase = VideoPhase::Playing;
 +            m_mediaPlayer->play();
@@ -428,34 +438,39 @@ index 000000000..ad9577dcd
 +    painter.setRenderHint(QPainter::Antialiasing);
 +    painter.setRenderHint(QPainter::SmoothPixmapTransform);
 +
++    const QPalette pal = palette();
++    QColor bgColor = pal.color(QPalette::Window).darker(300);
++    QColor shadowColor = pal.color(QPalette::Shadow);
++    QColor textColor = pal.color(QPalette::BrightText);
++    QFont labelFont = QApplication::font();
++    labelFont.setBold(true);
++
 +    // Background
-+    const int bgAlpha = static_cast<int>(180 * m_animationProgress);
-+    painter.fillRect(rect(), QColor(0, 0, 0, bgAlpha));
++    bgColor.setAlpha(static_cast<int>(BgAlphaMax * m_animationProgress));
++    painter.fillRect(rect(), bgColor);
 +
 +    const QRect targetRect = scaledContentRect();
 +
 +    // During live video playback — draw frame at full size, no scale animation
 +    if (m_contentType == ContentType::Video && m_videoPhase == VideoPhase::Playing) {
 +        // Drop shadow
-+        QRectF shadowRect = QRectF(targetRect).adjusted(4, 4, 4, 4);
++        shadowColor.setAlpha(ShadowAlphaMax);
++        QRectF shadowRect = QRectF(targetRect).adjusted(0, 0, ShadowOffset, ShadowOffset);
 +        painter.setPen(Qt::NoPen);
-+        painter.setBrush(QColor(0, 0, 0, 80));
-+        painter.drawRoundedRect(shadowRect, 6, 6);
++        painter.setBrush(shadowColor);
++        painter.drawRoundedRect(shadowRect, CornerRadius, CornerRadius);
 +
 +        // Video frame with rounded corners
 +        QPainterPath clipPath;
-+        clipPath.addRoundedRect(QRectF(targetRect), 6, 6);
++        clipPath.addRoundedRect(QRectF(targetRect), CornerRadius, CornerRadius);
 +        painter.setClipPath(clipPath);
 +        painter.drawPixmap(targetRect, m_pixmap);
 +        painter.setClipping(false);
 +
 +        // Filename
-+        painter.setPen(QColor(255, 255, 255));
-+        QFont font = painter.font();
-+        font.setPointSize(11);
-+        font.setBold(true);
-+        painter.setFont(font);
-+        const QRect textRect(0, targetRect.bottom() + 12, width(), 30);
++        painter.setPen(textColor);
++        painter.setFont(labelFont);
++        const QRect textRect(0, targetRect.bottom() + TextSpacing, width(), TextHeight);
 +        painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, m_currentUrl.fileName());
 +        return;
 +    }
@@ -468,29 +483,26 @@ index 000000000..ad9577dcd
 +    const QRectF drawRect(center.x() - w / 2.0, center.y() - h / 2.0, w, h);
 +
 +    // Drop shadow
-+    const int shadowOffset = static_cast<int>(4 * m_animationProgress);
-+    const int shadowAlpha = static_cast<int>(80 * m_animationProgress);
-+    QRectF shadowRect = drawRect.adjusted(shadowOffset, shadowOffset, shadowOffset, shadowOffset);
++    const int curShadowOffset = static_cast<int>(ShadowOffset * m_animationProgress);
++    shadowColor.setAlpha(static_cast<int>(ShadowAlphaMax * m_animationProgress));
++    QRectF shadowRect = drawRect.adjusted(curShadowOffset, curShadowOffset, curShadowOffset, curShadowOffset);
 +    painter.setPen(Qt::NoPen);
-+    painter.setBrush(QColor(0, 0, 0, shadowAlpha));
-+    painter.drawRoundedRect(shadowRect, 6, 6);
++    painter.setBrush(shadowColor);
++    painter.drawRoundedRect(shadowRect, CornerRadius, CornerRadius);
 +
 +    // Content with rounded corners
 +    QPainterPath clipPath;
-+    clipPath.addRoundedRect(drawRect, 6, 6);
++    clipPath.addRoundedRect(drawRect, CornerRadius, CornerRadius);
 +    painter.setClipPath(clipPath);
 +    painter.drawPixmap(drawRect.toRect(), m_pixmap);
 +    painter.setClipping(false);
 +
 +    // Filename + status
 +    const QString label = m_currentUrl.fileName() + m_statusText;
-+    const int textAlpha = static_cast<int>(255 * m_animationProgress);
-+    painter.setPen(QColor(255, 255, 255, textAlpha));
-+    QFont font = painter.font();
-+    font.setPointSize(11);
-+    font.setBold(true);
-+    painter.setFont(font);
-+    const QRect textRect(0, drawRect.bottom() + 12, width(), 30);
++    textColor.setAlpha(static_cast<int>(255 * m_animationProgress));
++    painter.setPen(textColor);
++    painter.setFont(labelFont);
++    const QRect textRect(0, drawRect.bottom() + TextSpacing, width(), TextHeight);
 +    painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, label);
 +}
 +
