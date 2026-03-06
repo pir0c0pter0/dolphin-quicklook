@@ -131,10 +131,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..7bb8a372e
+index 000000000..67da7487a
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,998 @@
+@@ -0,0 +1,1194 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -175,10 +175,12 @@ index 000000000..7bb8a372e
 +    constexpr qreal ZoomMin = 1.0;
 +    constexpr qreal ZoomMax = 5.0;
 +    constexpr qreal ZoomStep = 0.15;
++    constexpr qreal PdfFastDpi = 72.0;
 +    constexpr qreal PdfBaseDpi = 144.0;
 +    constexpr qreal PdfMaxDpi = 600.0;
 +    constexpr int PdfRerenderDelayMs = 200;
 +    constexpr int PdfCrossfadeDurationMs = 150;
++    constexpr int PdfPageRenderDelayMs = 50;
 +#ifdef HAVE_QTMULTIMEDIA
 +    constexpr int VideoLoadTimeoutMs = 3000;
 +    constexpr qreal DefaultVolume = 0.5;
@@ -208,6 +210,7 @@ index 000000000..7bb8a372e
 +    m_pdfRenderTimer->setSingleShot(true);
 +    connect(m_pdfRenderTimer, &QTimer::timeout, this, &QuickLookOverlay::rerenderHiRes);
 +    connect(&m_renderWatcher, &QFutureWatcher<QImage>::finished, this, &QuickLookOverlay::onHiResRenderFinished);
++    connect(&m_pageRenderWatcher, &QFutureWatcher<QImage>::finished, this, &QuickLookOverlay::onPdfPageRenderFinished);
 +
 +    hide();
 +}
@@ -216,6 +219,8 @@ index 000000000..7bb8a372e
 +{
 +    m_renderWatcher.cancel();
 +    m_renderWatcher.waitForFinished();
++    m_pageRenderWatcher.cancel();
++    m_pageRenderWatcher.waitForFinished();
 +#ifdef HAVE_QTMULTIMEDIA
 +    cleanupVideo();
 +#endif
@@ -284,13 +289,29 @@ index 000000000..7bb8a372e
 +    m_pdfDocument->setRenderHint(Poppler::Document::Antialiasing);
 +    m_pdfDocument->setRenderHint(Poppler::Document::TextAntialiasing);
 +
++    // Pre-load a persistent background document for async renders
++    // (avoids reloading large files from disk on every hi-res/page render)
++    m_pdfBgDocument = Poppler::Document::load(filePath);
++    if (m_pdfBgDocument) {
++        m_pdfBgDocument->setRenderHint(Poppler::Document::Antialiasing);
++        m_pdfBgDocument->setRenderHint(Poppler::Document::TextAntialiasing);
++    }
++
 +    m_pdfTotalPages = m_pdfDocument->numPages();
 +    m_pdfCurrentPage = 0;
 +    m_pdfFilePath = filePath;
 +    m_contentType = ContentType::Pdf;
 +    m_imageFilePath.clear();
++    m_pdfPageCache.clear();
++    m_pdfCacheLru.clear();
 +
++    // Fast initial render at low DPI for instant display
 +    renderPdfPage(0);
++
++    // Schedule async upgrade to full quality
++    if (!m_pixmap.isNull()) {
++        m_pdfRenderTimer->start(PdfPageRenderDelayMs);
++    }
 +
 +    return !m_pixmap.isNull();
 +#else
@@ -306,28 +327,43 @@ index 000000000..7bb8a372e
 +        return;
 +    }
 +
++    m_pdfCurrentPage = pageIndex;
++    m_hiResLowResPixmap = QPixmap();
++    m_hiResCrossfading = false;
++
++    // Check cache first — instant page switch for visited pages
++    const QPixmap cached = pdfCacheLookup(pageIndex);
++    if (!cached.isNull()) {
++        m_pixmap = cached;
++        m_pdfRenderedDpi = PdfBaseDpi;
++        updatePdfStatusText();
++        return;
++    }
++
++    // Fast render at low DPI (72) on main thread — lightweight enough to not block
 +    m_pdfPage = m_pdfDocument->page(pageIndex);
 +    if (!m_pdfPage) {
 +        return;
 +    }
 +
-+    const QImage image = m_pdfPage->renderToImage(PdfBaseDpi, PdfBaseDpi);
++    const QImage image = m_pdfPage->renderToImage(PdfFastDpi, PdfFastDpi);
 +    if (image.isNull()) {
 +        return;
 +    }
 +
 +    m_pixmap = QPixmap::fromImage(image);
-+    m_pdfRenderedDpi = PdfBaseDpi;
-+    m_hiResLowResPixmap = QPixmap();
-+    m_hiResCrossfading = false;
-+    m_pdfCurrentPage = pageIndex;
-+
-+    m_statusText = (m_pdfTotalPages > 1)
-+        ? QStringLiteral(" — Page %1 of %2").arg(pageIndex + 1).arg(m_pdfTotalPages)
-+        : QStringLiteral(" — 1 page");
++    m_pdfRenderedDpi = PdfFastDpi;
++    updatePdfStatusText();
 +#else
 +    Q_UNUSED(pageIndex)
 +#endif
++}
++
++void QuickLookOverlay::updatePdfStatusText()
++{
++    m_statusText = (m_pdfTotalPages > 1)
++        ? QStringLiteral(" — Page %1 of %2").arg(m_pdfCurrentPage + 1).arg(m_pdfTotalPages)
++        : QStringLiteral(" — 1 page");
 +}
 +
 +void QuickLookOverlay::navigatePdfPage(int direction)
@@ -342,17 +378,115 @@ index 000000000..7bb8a372e
 +        return;
 +    }
 +
-+    // Stop scheduled renders; any in-flight render will be discarded
++    // Don't navigate while an async page render is pending
++    if (m_pageRenderPending) {
++        return;
++    }
++
++    // Stop scheduled hi-res renders; stale results are discarded
 +    // by onHiResRenderFinished via page index mismatch check
 +    m_pdfRenderTimer->stop();
 +
 +    // Reset zoom when changing pages
 +    resetZoom();
 +
++    // renderPdfPage tries cache first, then does fast 72 DPI render
 +    renderPdfPage(newPage);
++
++    // Schedule async upgrade to full DPI + prefetch neighbors
++    m_pdfRenderTimer->start(PdfPageRenderDelayMs);
++
 +    update();
 +#else
 +    Q_UNUSED(direction)
++#endif
++}
++
++void QuickLookOverlay::renderPdfPageAsync(int pageIndex)
++{
++#ifdef HAVE_POPPLER
++    // Ensure only one background task accesses m_pdfBgDocument at a time
++    if (m_pageRenderPending || m_renderPending || !m_pdfBgDocument) {
++        return;
++    }
++
++    // Already cached at full quality? Skip
++    if (m_pdfPageCache.contains(pageIndex)) {
++        return;
++    }
++
++    m_pageRenderPending = true;
++    m_pageRenderTargetPage = pageIndex;
++
++    // Use the persistent background document (already in memory)
++    Poppler::Document *bgDoc = m_pdfBgDocument.get();
++    m_pageRenderWatcher.setFuture(QtConcurrent::run([bgDoc, pageIndex]() -> QImage {
++        auto pg = bgDoc->page(pageIndex);
++        if (!pg) {
++            return {};
++        }
++        return pg->renderToImage(PdfBaseDpi, PdfBaseDpi);
++    }));
++#else
++    Q_UNUSED(pageIndex)
++#endif
++}
++
++void QuickLookOverlay::onPdfPageRenderFinished()
++{
++    m_pageRenderPending = false;
++
++    if (!m_active || m_contentType != ContentType::Pdf) {
++        return;
++    }
++
++    if (m_pageRenderWatcher.isCanceled()) {
++        return;
++    }
++
++    const QImage image = m_pageRenderWatcher.result();
++    if (image.isNull()) {
++        return;
++    }
++
++    const int targetPage = m_pageRenderTargetPage;
++    const QPixmap rendered = QPixmap::fromImage(image);
++
++    // Cache the full-quality render
++    pdfCacheInsert(targetPage, rendered);
++
++    // If this is for the currently displayed page, crossfade to hi-res
++    if (targetPage == m_pdfCurrentPage) {
++        m_hiResLowResPixmap = m_pixmap;
++        m_pixmap = rendered;
++        m_pdfRenderedDpi = PdfBaseDpi;
++
++        m_hiResCrossfade = 0.0;
++        m_hiResCrossfading = true;
++        m_hiResFadeTimer.start();
++        update();
++    }
++
++    // Prefetch adjacent pages
++    prefetchAdjacentPages();
++}
++
++void QuickLookOverlay::prefetchAdjacentPages()
++{
++#ifdef HAVE_POPPLER
++    if (m_pageRenderPending) {
++        return;
++    }
++
++    // Prefetch next page, then previous
++    const int next = m_pdfCurrentPage + 1;
++    const int prev = m_pdfCurrentPage - 1;
++
++    if (next < m_pdfTotalPages && !m_pdfPageCache.contains(next)) {
++        renderPdfPageAsync(next);
++    } else if (prev >= 0 && !m_pdfPageCache.contains(prev)) {
++        renderPdfPageAsync(prev);
++    }
 +#endif
 +}
 +
@@ -463,6 +597,39 @@ index 000000000..7bb8a372e
 +    }
 +}
 +#endif
++
++void QuickLookOverlay::pdfCacheInsert(int pageIndex, const QPixmap &pixmap)
++{
++    if (m_pdfPageCache.contains(pageIndex)) {
++        // Move to front of LRU
++        m_pdfCacheLru.removeOne(pageIndex);
++        m_pdfCacheLru.prepend(pageIndex);
++        m_pdfPageCache[pageIndex] = pixmap;
++        return;
++    }
++
++    // Evict oldest if at capacity
++    while (m_pdfCacheLru.size() >= PdfCacheMaxPages) {
++        const int evicted = m_pdfCacheLru.takeLast();
++        m_pdfPageCache.remove(evicted);
++    }
++
++    m_pdfPageCache.insert(pageIndex, pixmap);
++    m_pdfCacheLru.prepend(pageIndex);
++}
++
++QPixmap QuickLookOverlay::pdfCacheLookup(int pageIndex)
++{
++    if (!m_pdfPageCache.contains(pageIndex)) {
++        return {};
++    }
++
++    // Move to front of LRU
++    m_pdfCacheLru.removeOne(pageIndex);
++    m_pdfCacheLru.prepend(pageIndex);
++
++    return m_pdfPageCache.value(pageIndex);
++}
 +
 +void QuickLookOverlay::showPreview(const QUrl &fileUrl)
 +{
@@ -582,6 +749,9 @@ index 000000000..7bb8a372e
 +#ifdef HAVE_POPPLER
 +        m_pdfPage.reset();
 +        m_pdfDocument.reset();
++        m_pdfBgDocument.reset();
++        m_pdfPageCache.clear();
++        m_pdfCacheLru.clear();
 +#endif
 +#ifdef HAVE_QTMULTIMEDIA
 +        cleanupVideo();
@@ -669,9 +839,22 @@ index 000000000..7bb8a372e
 +            return;
 +        }
 +
++        // If we're at base DPI from a cached page and no zoom, just upgrade
++        // the current page from fast DPI to base DPI via async render
++        if (m_pdfRenderedDpi < PdfBaseDpi && qFuzzyCompare(m_zoomFactor, 1.0)) {
++            renderPdfPageAsync(m_pdfCurrentPage);
++            return;
++        }
++
 +        const qreal targetDpi = qBound(PdfBaseDpi, PdfBaseDpi * m_zoomFactor, PdfMaxDpi);
 +        const qreal ratio = targetDpi / m_pdfRenderedDpi;
 +        if (ratio > 0.85 && ratio < 1.15) {
++            return;
++        }
++
++        // Don't start zoom hi-res render if page render is still running
++        if (m_pageRenderPending) {
++            m_pdfRenderTimer->start(PdfRerenderDelayMs);
 +            return;
 +        }
 +
@@ -679,24 +862,37 @@ index 000000000..7bb8a372e
 +        m_renderPending = true;
 +        m_renderPageIndex = m_pdfCurrentPage;
 +
-+        // Poppler is NOT thread-safe per document, so we load a fresh
-+        // document+page inside the worker thread
++        // Use persistent background document (already in memory)
++        // instead of reloading large files from disk
 +        const QString filePath = m_pdfFilePath;
 +        const qreal dpi = targetDpi;
 +        const int pageIndex = m_pdfCurrentPage;
-+        m_renderWatcher.setFuture(QtConcurrent::run([filePath, dpi, pageIndex]() -> QImage {
-+            auto doc = Poppler::Document::load(filePath);
-+            if (!doc) {
-+                return {};
-+            }
-+            doc->setRenderHint(Poppler::Document::Antialiasing);
-+            doc->setRenderHint(Poppler::Document::TextAntialiasing);
-+            auto pg = doc->page(pageIndex);
-+            if (!pg) {
-+                return {};
-+            }
-+            return pg->renderToImage(dpi, dpi);
-+        }));
++
++        if (m_pdfBgDocument) {
++            Poppler::Document *bgDoc = m_pdfBgDocument.get();
++            m_renderWatcher.setFuture(QtConcurrent::run([bgDoc, dpi, pageIndex]() -> QImage {
++                auto pg = bgDoc->page(pageIndex);
++                if (!pg) {
++                    return {};
++                }
++                return pg->renderToImage(dpi, dpi);
++            }));
++        } else {
++            // Fallback: reload from disk if background document unavailable
++            m_renderWatcher.setFuture(QtConcurrent::run([filePath, dpi, pageIndex]() -> QImage {
++                auto doc = Poppler::Document::load(filePath);
++                if (!doc) {
++                    return {};
++                }
++                doc->setRenderHint(Poppler::Document::Antialiasing);
++                doc->setRenderHint(Poppler::Document::TextAntialiasing);
++                auto pg = doc->page(pageIndex);
++                if (!pg) {
++                    return {};
++                }
++                return pg->renderToImage(dpi, dpi);
++            }));
++        }
 +#endif
 +    } else if (m_contentType == ContentType::Image && !m_imageFilePath.isEmpty()) {
 +        const QRectF base = baseContentRect();
@@ -1135,10 +1331,10 @@ index 000000000..7bb8a372e
 +}
 diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
 new file mode 100644
-index 000000000..164521a9b
+index 000000000..1839a7955
 --- /dev/null
 +++ b/src/views/quicklookoverlay.h
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,190 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -1156,6 +1352,8 @@ index 000000000..164521a9b
 +
 +#include <memory>
 +#include <QFutureWatcher>
++#include <QHash>
++#include <QPixmap>
 +
 +class QLabel;
 +class QTimer;
@@ -1227,6 +1425,10 @@ index 000000000..164521a9b
 +    bool loadPdf(const QString &filePath);
 +    void navigatePdfPage(int direction);
 +    void renderPdfPage(int pageIndex);
++    void renderPdfPageAsync(int pageIndex);
++    void onPdfPageRenderFinished();
++    void prefetchAdjacentPages();
++    void updatePdfStatusText();
 +
 +#ifdef HAVE_QTMULTIMEDIA
 +    void setupVideo(const QUrl &fileUrl);
@@ -1256,6 +1458,13 @@ index 000000000..164521a9b
 +    QRect m_pdfArrowUpRect;
 +    QRect m_pdfArrowDownRect;
 +
++    // PDF page cache (LRU, keyed by page index)
++    static constexpr int PdfCacheMaxPages = 5;
++    QHash<int, QPixmap> m_pdfPageCache;
++    QList<int> m_pdfCacheLru;
++    void pdfCacheInsert(int pageIndex, const QPixmap &pixmap);
++    QPixmap pdfCacheLookup(int pageIndex);
++
 +    // Progressive rendering (PDF + Image)
 +    QString m_pdfFilePath;
 +    QString m_imageFilePath;
@@ -1265,6 +1474,8 @@ index 000000000..164521a9b
 +#ifdef HAVE_POPPLER
 +    std::unique_ptr<Poppler::Document> m_pdfDocument;
 +    std::unique_ptr<Poppler::Page> m_pdfPage;
++    // Persistent background document (avoids reloading large files)
++    std::unique_ptr<Poppler::Document> m_pdfBgDocument;
 +#endif
 +    QPixmap m_hiResLowResPixmap;
 +    qreal m_hiResCrossfade = 1.0;
@@ -1275,6 +1486,11 @@ index 000000000..164521a9b
 +    qreal m_renderTargetDpi = 0.0;
 +    bool m_renderPending = false;
 +    int m_renderPageIndex = 0;
++
++    // Async page render (for page navigation)
++    QFutureWatcher<QImage> m_pageRenderWatcher;
++    int m_pageRenderTargetPage = -1;
++    bool m_pageRenderPending = false;
 +
 +    // Zoom & pan
 +    qreal m_zoomFactor = 1.0;
