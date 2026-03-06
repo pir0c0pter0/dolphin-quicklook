@@ -110,10 +110,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..760e8a010
+index 000000000..3058a3abb
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,452 @@
+@@ -0,0 +1,478 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -124,7 +124,6 @@ index 000000000..760e8a010
 +
 +#include <QApplication>
 +#include <QAudioOutput>
-+#include <QEasingCurve>
 +#include <QImageReader>
 +#include <QKeyEvent>
 +#include <QLabel>
@@ -133,7 +132,6 @@ index 000000000..760e8a010
 +#include <QMouseEvent>
 +#include <QPainter>
 +#include <QPainterPath>
-+#include <QPropertyAnimation>
 +#include <QResizeEvent>
 +#include <QVideoFrame>
 +#include <QVideoSink>
@@ -156,7 +154,6 @@ index 000000000..760e8a010
 +    , m_animationProgress(0.0)
 +    , m_active(false)
 +    , m_contentType(ContentType::Image)
-+    , m_animation(new QPropertyAnimation(this, "animationProgress", this))
 +    , m_videoPhase(VideoPhase::Loading)
 +    , m_mediaPlayer(nullptr)
 +    , m_videoSink(nullptr)
@@ -164,9 +161,6 @@ index 000000000..760e8a010
 +{
 +    setFocusPolicy(Qt::StrongFocus);
 +    hide();
-+
-+    m_animation->setDuration(250);
-+    m_animation->setEasingCurve(QEasingCurve::OutCubic);
 +}
 +
 +QuickLookOverlay::~QuickLookOverlay()
@@ -409,16 +403,33 @@ index 000000000..760e8a010
 +{
 +    m_animationProgress = progress;
 +    update();
++}
 +
-+    if (progress >= 1.0 && m_animation->direction() == QAbstractAnimation::Forward) {
++void QuickLookOverlay::advanceAnimation()
++{
++    if (!m_animating) {
++        return;
++    }
++
++    const qreal elapsed = static_cast<qreal>(m_animTimer.elapsed());
++    const qreal t = qBound(0.0, elapsed / m_animDuration, 1.0);
++    const qreal easedT = m_easingCurve.valueForProgress(t);
++    m_animationProgress = m_animStartValue + (m_animEndValue - m_animStartValue) * easedT;
++
++    if (t >= 1.0) {
++        m_animating = false;
++        onAnimationFinished();
++    }
++}
++
++void QuickLookOverlay::onAnimationFinished()
++{
++    if (m_animForward) {
 +        if (m_contentType == ContentType::Video && m_videoPhase == VideoPhase::Animating && m_mediaPlayer) {
-+            // Thumbnail animation done — switch to live playback
 +            m_videoPhase = VideoPhase::Playing;
 +            m_mediaPlayer->play();
 +        }
-+    }
-+
-+    if (progress <= 0.0 && m_animation->direction() == QAbstractAnimation::Backward) {
++    } else {
 +        m_active = false;
 +        cleanupVideo();
 +        hide();
@@ -430,7 +441,12 @@ index 000000000..760e8a010
 +{
 +    Q_UNUSED(event)
 +
++    advanceAnimation();
++
 +    if (m_pixmap.isNull()) {
++        if (m_animating) {
++            update();
++        }
 +        return;
 +    }
 +
@@ -472,6 +488,9 @@ index 000000000..760e8a010
 +        painter.setFont(labelFont);
 +        const QRect textRect(0, targetRect.bottom() + TextSpacing, width(), TextHeight);
 +        painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, m_currentUrl.fileName());
++        if (m_animating) {
++            update();
++        }
 +        return;
 +    }
 +
@@ -504,6 +523,11 @@ index 000000000..760e8a010
 +    painter.setFont(labelFont);
 +    const QRect textRect(0, drawRect.bottom() + TextSpacing, width(), TextHeight);
 +    painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, label);
++
++    // Schedule next frame if animation is still running
++    if (m_animating) {
++        update();
++    }
 +}
 +
 +void QuickLookOverlay::mouseDoubleClickEvent(QMouseEvent *event)
@@ -530,20 +554,22 @@ index 000000000..760e8a010
 +
 +void QuickLookOverlay::startShowAnimation()
 +{
-+    m_animation->stop();
-+    m_animation->setDirection(QAbstractAnimation::Forward);
-+    m_animation->setStartValue(0.0);
-+    m_animation->setEndValue(1.0);
-+    m_animation->start();
++    m_animStartValue = m_animationProgress;
++    m_animEndValue = 1.0;
++    m_animForward = true;
++    m_animating = true;
++    m_animTimer.start();
++    update();
 +}
 +
 +void QuickLookOverlay::startHideAnimation()
 +{
-+    m_animation->stop();
-+    m_animation->setDirection(QAbstractAnimation::Backward);
-+    m_animation->setStartValue(0.0);
-+    m_animation->setEndValue(1.0);
-+    m_animation->start();
++    m_animStartValue = m_animationProgress;
++    m_animEndValue = 0.0;
++    m_animForward = false;
++    m_animating = true;
++    m_animTimer.start();
++    update();
 +}
 +
 +QRect QuickLookOverlay::scaledContentRect() const
@@ -568,10 +594,10 @@ index 000000000..760e8a010
 +}
 diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
 new file mode 100644
-index 000000000..57eb9ea8e
+index 000000000..c2c0876b2
 --- /dev/null
 +++ b/src/views/quicklookoverlay.h
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,95 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -583,9 +609,10 @@ index 000000000..57eb9ea8e
 +
 +#include <QWidget>
 +#include <QUrl>
++#include <QEasingCurve>
++#include <QElapsedTimer>
 +
 +class QLabel;
-+class QPropertyAnimation;
 +class QMediaPlayer;
 +class QVideoSink;
 +class QAudioOutput;
@@ -639,6 +666,9 @@ index 000000000..57eb9ea8e
 +    void setupVideo(const QUrl &fileUrl);
 +    void cleanupVideo();
 +
++    void advanceAnimation();
++    void onAnimationFinished();
++
 +    QPixmap m_pixmap;
 +    QUrl m_currentUrl;
 +    qreal m_animationProgress;
@@ -646,7 +676,14 @@ index 000000000..57eb9ea8e
 +    ContentType m_contentType;
 +    QString m_statusText;
 +
-+    QPropertyAnimation *m_animation;
++    // Frame-driven animation (syncs with monitor refresh rate)
++    QElapsedTimer m_animTimer;
++    QEasingCurve m_easingCurve{QEasingCurve::OutCubic};
++    int m_animDuration = 250;
++    bool m_animating = false;
++    bool m_animForward = true;
++    qreal m_animStartValue = 0.0;
++    qreal m_animEndValue = 1.0;
 +
 +    // Video playback — rendered via QVideoSink + QPainter (no QVideoWidget)
 +    VideoPhase m_videoPhase;
