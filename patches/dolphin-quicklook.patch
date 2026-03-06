@@ -193,10 +193,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..307575831
+index 000000000..fdf6e1214
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,537 @@
+@@ -0,0 +1,867 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -214,6 +214,8 @@ index 000000000..307575831
 +#include <QPainterPath>
 +#include <QResizeEvent>
 +#include <QTimer>
++#include <QWheelEvent>
++#include <QtConcurrent>
 +
 +#ifdef HAVE_QTMULTIMEDIA
 +#include <QAudioOutput>
@@ -232,6 +234,13 @@ index 000000000..307575831
 +    constexpr int ContentPadding = 40;
 +    constexpr int BottomExtraSpace = 50;
 +    constexpr int ContentVerticalShift = 20;
++    constexpr qreal ZoomMin = 1.0;
++    constexpr qreal ZoomMax = 5.0;
++    constexpr qreal ZoomStep = 0.15;
++    constexpr qreal PdfBaseDpi = 144.0;
++    constexpr qreal PdfMaxDpi = 600.0;
++    constexpr int PdfRerenderDelayMs = 200;
++    constexpr int PdfCrossfadeDurationMs = 150;
 +#ifdef HAVE_QTMULTIMEDIA
 +    constexpr int VideoLoadTimeoutMs = 3000;
 +    constexpr qreal DefaultVolume = 0.5;
@@ -256,11 +265,19 @@ index 000000000..307575831
 +#endif
 +{
 +    setFocusPolicy(Qt::StrongFocus);
++
++    m_pdfRenderTimer = new QTimer(this);
++    m_pdfRenderTimer->setSingleShot(true);
++    connect(m_pdfRenderTimer, &QTimer::timeout, this, &QuickLookOverlay::rerenderHiRes);
++    connect(&m_renderWatcher, &QFutureWatcher<QImage>::finished, this, &QuickLookOverlay::onHiResRenderFinished);
++
 +    hide();
 +}
 +
 +QuickLookOverlay::~QuickLookOverlay()
 +{
++    m_renderWatcher.cancel();
++    m_renderWatcher.waitForFinished();
 +#ifdef HAVE_QTMULTIMEDIA
 +    cleanupVideo();
 +#endif
@@ -309,6 +326,11 @@ index 000000000..307575831
 +    }
 +    m_pixmap = QPixmap::fromImage(image);
 +    m_contentType = ContentType::Image;
++    m_imageFilePath = filePath;
++    m_imageOriginalSize = imgSize.isValid() ? imgSize : image.size();
++    m_imageRenderedWidth = m_pixmap.width();
++    m_hiResLowResPixmap = QPixmap();
++    m_hiResCrossfading = false;
 +    m_statusText.clear();
 +    return true;
 +}
@@ -316,28 +338,36 @@ index 000000000..307575831
 +bool QuickLookOverlay::loadPdf(const QString &filePath)
 +{
 +#ifdef HAVE_POPPLER
-+    auto document = Poppler::Document::load(filePath);
-+    if (!document) {
++    m_pdfDocument = Poppler::Document::load(filePath);
++    if (!m_pdfDocument) {
 +        return false;
 +    }
 +
-+    document->setRenderHint(Poppler::Document::Antialiasing);
-+    document->setRenderHint(Poppler::Document::TextAntialiasing);
++    m_pdfDocument->setRenderHint(Poppler::Document::Antialiasing);
++    m_pdfDocument->setRenderHint(Poppler::Document::TextAntialiasing);
 +
-+    auto page = document->page(0);
-+    if (!page) {
++    m_pdfPage = m_pdfDocument->page(0);
++    if (!m_pdfPage) {
++        m_pdfDocument.reset();
 +        return false;
 +    }
 +
-+    const QImage image = page->renderToImage(144, 144);
++    const QImage image = m_pdfPage->renderToImage(PdfBaseDpi, PdfBaseDpi);
 +    if (image.isNull()) {
++        m_pdfPage.reset();
++        m_pdfDocument.reset();
 +        return false;
 +    }
 +
 +    m_pixmap = QPixmap::fromImage(image);
 +    m_contentType = ContentType::Pdf;
++    m_pdfFilePath = filePath;
++    m_pdfRenderedDpi = PdfBaseDpi;
++    m_imageFilePath.clear();
++    m_hiResLowResPixmap = QPixmap();
++    m_hiResCrossfading = false;
 +
-+    const int totalPages = document->numPages();
++    const int totalPages = m_pdfDocument->numPages();
 +    m_statusText = (totalPages > 1)
 +        ? QStringLiteral(" — %1 pages").arg(totalPages)
 +        : QStringLiteral(" — 1 page");
@@ -481,6 +511,7 @@ index 000000000..307575831
 +    else if (mimeType.startsWith(QLatin1String("video/"))) {
 +        m_currentUrl = fileUrl;
 +        m_active = true;
++        resetZoom();
 +        setupVideo(fileUrl);
 +        return;
 +    }
@@ -492,6 +523,7 @@ index 000000000..307575831
 +
 +    m_currentUrl = fileUrl;
 +    m_active = true;
++    resetZoom();
 +
 +    if (!parentWidget()) {
 +        return;
@@ -570,6 +602,10 @@ index 000000000..307575831
 +    } else {
 +        m_active = false;
 +        m_pixmap = QPixmap();
++#ifdef HAVE_POPPLER
++        m_pdfPage.reset();
++        m_pdfDocument.reset();
++#endif
 +#ifdef HAVE_QTMULTIMEDIA
 +        cleanupVideo();
 +#endif
@@ -578,14 +614,177 @@ index 000000000..307575831
 +    }
 +}
 +
++void QuickLookOverlay::advanceZoomAnimation()
++{
++    if (!m_zoomAnimating) {
++        return;
++    }
++
++    const qreal elapsed = static_cast<qreal>(m_zoomAnimTimer.elapsed());
++    const qreal duration = qMax(1.0, static_cast<qreal>(m_zoomAnimDuration));
++    const qreal t = qBound(0.0, elapsed / duration, 1.0);
++    const qreal easedT = m_easingCurve.valueForProgress(t);
++
++    m_zoomFactor = m_zoomAnimStartFactor + (1.0 - m_zoomAnimStartFactor) * easedT;
++    m_panOffset = m_zoomAnimStartPan * (1.0 - easedT);
++
++    if (t >= 1.0) {
++        m_zoomAnimating = false;
++        m_zoomFactor = 1.0;
++        m_panOffset = QPointF(0, 0);
++        setCursor(Qt::ArrowCursor);
++    }
++}
++
++void QuickLookOverlay::animateZoomReset()
++{
++    m_zoomAnimStartFactor = m_zoomFactor;
++    m_zoomAnimStartPan = m_panOffset;
++    m_zoomAnimating = true;
++    m_zoomAnimTimer.start();
++    m_dragging = false;
++    update();
++}
++
++void QuickLookOverlay::scheduleHiResRerender()
++{
++    if (m_contentType == ContentType::Pdf) {
++#ifdef HAVE_POPPLER
++        const qreal targetDpi = qBound(PdfBaseDpi, PdfBaseDpi * m_zoomFactor, PdfMaxDpi);
++        const qreal ratio = targetDpi / m_pdfRenderedDpi;
++        // Re-render if target differs significantly (up or down)
++        if (ratio > 0.85 && ratio < 1.15) {
++            return;
++        }
++        m_pdfRenderTimer->start(PdfRerenderDelayMs);
++#endif
++    } else if (m_contentType == ContentType::Image && !m_imageFilePath.isEmpty()) {
++        if (!m_imageOriginalSize.isValid() || m_pixmap.isNull()) {
++            return;
++        }
++
++        const QRectF base = baseContentRect();
++        const int targetWidth = qBound(
++            static_cast<int>(base.width()),
++            static_cast<int>(base.width() * m_zoomFactor),
++            m_imageOriginalSize.width());
++        const qreal ratio = static_cast<qreal>(targetWidth) / m_imageRenderedWidth;
++        if (ratio > 0.85 && ratio < 1.15) {
++            return;
++        }
++
++        m_pdfRenderTimer->start(PdfRerenderDelayMs);
++    }
++}
++
++void QuickLookOverlay::rerenderHiRes()
++{
++    // Don't start a new render if one is already running
++    if (m_renderPending) {
++        // Re-schedule to pick up the latest zoom after current render finishes
++        m_pdfRenderTimer->start(PdfRerenderDelayMs);
++        return;
++    }
++
++    if (m_contentType == ContentType::Pdf) {
++#ifdef HAVE_POPPLER
++        if (!m_pdfPage) {
++            return;
++        }
++
++        const qreal targetDpi = qBound(PdfBaseDpi, PdfBaseDpi * m_zoomFactor, PdfMaxDpi);
++        const qreal ratio = targetDpi / m_pdfRenderedDpi;
++        if (ratio > 0.85 && ratio < 1.15) {
++            return;
++        }
++
++        m_renderTargetDpi = targetDpi;
++        m_renderPending = true;
++
++        // Poppler is NOT thread-safe per document, so we load a fresh
++        // document+page inside the worker thread
++        const QString filePath = m_pdfFilePath;
++        const qreal dpi = targetDpi;
++        m_renderWatcher.setFuture(QtConcurrent::run([filePath, dpi]() -> QImage {
++            auto doc = Poppler::Document::load(filePath);
++            if (!doc) {
++                return {};
++            }
++            doc->setRenderHint(Poppler::Document::Antialiasing);
++            doc->setRenderHint(Poppler::Document::TextAntialiasing);
++            auto pg = doc->page(0);
++            if (!pg) {
++                return {};
++            }
++            return pg->renderToImage(dpi, dpi);
++        }));
++#endif
++    } else if (m_contentType == ContentType::Image && !m_imageFilePath.isEmpty()) {
++        const QRectF base = baseContentRect();
++        const int targetWidth = qBound(
++            static_cast<int>(base.width()),
++            static_cast<int>(base.width() * m_zoomFactor),
++            m_imageOriginalSize.width());
++        const qreal ratio = static_cast<qreal>(targetWidth) / m_imageRenderedWidth;
++        if (ratio > 0.85 && ratio < 1.15) {
++            return;
++        }
++
++        m_renderPending = true;
++
++        const QString filePath = m_imageFilePath;
++        const QSize origSize = m_imageOriginalSize;
++        const int tw = targetWidth;
++        m_renderWatcher.setFuture(QtConcurrent::run([filePath, origSize, tw]() -> QImage {
++            QImageReader reader(filePath);
++            reader.setAutoTransform(true);
++
++            QSize scaledSize = origSize;
++            scaledSize.scale(tw, tw * origSize.height() / origSize.width(), Qt::KeepAspectRatio);
++            reader.setScaledSize(scaledSize);
++
++            return reader.read();
++        }));
++    }
++}
++
++void QuickLookOverlay::onHiResRenderFinished()
++{
++    m_renderPending = false;
++
++    if (!m_active) {
++        return;
++    }
++
++    const QImage image = m_renderWatcher.result();
++    if (image.isNull()) {
++        return;
++    }
++
++    m_hiResLowResPixmap = m_pixmap;
++    m_pixmap = QPixmap::fromImage(image);
++
++    if (m_contentType == ContentType::Pdf) {
++        m_pdfRenderedDpi = m_renderTargetDpi;
++    } else if (m_contentType == ContentType::Image) {
++        m_imageRenderedWidth = m_pixmap.width();
++    }
++
++    m_hiResCrossfade = 0.0;
++    m_hiResCrossfading = true;
++    m_hiResFadeTimer.start();
++    update();
++}
++
 +void QuickLookOverlay::paintEvent(QPaintEvent *event)
 +{
 +    Q_UNUSED(event)
 +
 +    advanceAnimation();
++    advanceZoomAnimation();
 +
 +    if (m_pixmap.isNull()) {
-+        if (m_animating) {
++        if (m_animating || m_zoomAnimating) {
 +            update();
 +        }
 +        return;
@@ -629,7 +828,7 @@ index 000000000..307575831
 +        painter.setFont(labelFont);
 +        const QRect textRect(0, targetRect.bottom() + TextSpacing, width(), TextHeight);
 +        painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, m_currentUrl.fileName());
-+        if (m_animating) {
++        if (m_animating || m_zoomAnimating) {
 +            update();
 +        }
 +        return;
@@ -656,7 +855,28 @@ index 000000000..307575831
 +    QPainterPath clipPath;
 +    clipPath.addRoundedRect(drawRect, CornerRadius, CornerRadius);
 +    painter.setClipPath(clipPath);
-+    painter.drawPixmap(drawRect.toRect(), m_pixmap);
++
++    // PDF crossfade: blend old low-res into new high-res
++    if (m_hiResCrossfading && !m_hiResLowResPixmap.isNull()) {
++        const qreal elapsed = static_cast<qreal>(m_hiResFadeTimer.elapsed());
++        m_hiResCrossfade = qBound(0.0, elapsed / PdfCrossfadeDurationMs, 1.0);
++
++        // Draw old (fading out)
++        painter.setOpacity(m_animationProgress * (1.0 - m_hiResCrossfade));
++        painter.drawPixmap(drawRect.toRect(), m_hiResLowResPixmap);
++
++        // Draw new (fading in)
++        painter.setOpacity(m_animationProgress * m_hiResCrossfade);
++        painter.drawPixmap(drawRect.toRect(), m_pixmap);
++
++        if (m_hiResCrossfade >= 1.0) {
++            m_hiResCrossfading = false;
++            m_hiResLowResPixmap = QPixmap();
++        }
++    } else {
++        painter.drawPixmap(drawRect.toRect(), m_pixmap);
++    }
++
 +    painter.setClipping(false);
 +    painter.setOpacity(1.0);
 +
@@ -668,7 +888,7 @@ index 000000000..307575831
 +    painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, label);
 +
 +    // Schedule next frame if animation is still running
-+    if (m_animating) {
++    if (m_animating || m_zoomAnimating || m_hiResCrossfading) {
 +        update();
 +    }
 +}
@@ -677,6 +897,93 @@ index 000000000..307575831
 +{
 +    Q_UNUSED(event)
 +    hidePreview();
++}
++
++void QuickLookOverlay::mousePressEvent(QMouseEvent *event)
++{
++    if (event->button() == Qt::RightButton && m_zoomFactor > ZoomMin) {
++        animateZoomReset();
++        event->accept();
++        return;
++    }
++    if (event->button() == Qt::LeftButton && m_zoomFactor > ZoomMin) {
++        m_dragging = true;
++        m_lastMousePos = event->position();
++        setCursor(Qt::ClosedHandCursor);
++        event->accept();
++        return;
++    }
++    QWidget::mousePressEvent(event);
++}
++
++void QuickLookOverlay::mouseMoveEvent(QMouseEvent *event)
++{
++    if (m_dragging) {
++        const QPointF delta = event->position() - m_lastMousePos;
++        m_panOffset += delta;
++        m_lastMousePos = event->position();
++        update();
++        event->accept();
++        return;
++    }
++    QWidget::mouseMoveEvent(event);
++}
++
++void QuickLookOverlay::mouseReleaseEvent(QMouseEvent *event)
++{
++    if (event->button() == Qt::LeftButton && m_dragging) {
++        m_dragging = false;
++        setCursor(m_zoomFactor > ZoomMin ? Qt::OpenHandCursor : Qt::ArrowCursor);
++        event->accept();
++        return;
++    }
++    QWidget::mouseReleaseEvent(event);
++}
++
++void QuickLookOverlay::wheelEvent(QWheelEvent *event)
++{
++    if (!m_active || m_animating || m_zoomAnimating) {
++        event->ignore();
++        return;
++    }
++
++    // Only zoom when cursor is over the content area
++    const QRect contentArea = scaledContentRect();
++    const QPointF cursorPos = event->position();
++    if (!contentArea.contains(cursorPos.toPoint())) {
++        event->accept();
++        return;
++    }
++
++    const qreal oldZoom = m_zoomFactor;
++    const qreal delta = event->angleDelta().y() > 0 ? ZoomStep : -ZoomStep;
++    m_zoomFactor = qBound(ZoomMin, m_zoomFactor + delta * m_zoomFactor, ZoomMax);
++
++    if (qFuzzyCompare(m_zoomFactor, oldZoom)) {
++        event->accept();
++        return;
++    }
++
++    // Zoom toward cursor: keep the content point under cursor fixed.
++    // panOffset is relative to baseContentRect center, so we must
++    // express cursorPos relative to that same center.
++    const QRectF base = baseContentRect();
++    const QPointF baseCenter = base.center();
++    const qreal ratio = m_zoomFactor / oldZoom;
++    m_panOffset = (1.0 - ratio) * (cursorPos - baseCenter) + ratio * m_panOffset;
++
++    // Reset pan when back to 1.0
++    if (qFuzzyCompare(m_zoomFactor, ZoomMin)) {
++        m_panOffset = QPointF(0, 0);
++        setCursor(Qt::ArrowCursor);
++    } else {
++        setCursor(Qt::OpenHandCursor);
++    }
++
++    scheduleHiResRerender();
++
++    update();
++    event->accept();
 +}
 +
 +void QuickLookOverlay::keyPressEvent(QKeyEvent *event)
@@ -715,7 +1022,15 @@ index 000000000..307575831
 +    update();
 +}
 +
-+QRect QuickLookOverlay::scaledContentRect() const
++void QuickLookOverlay::resetZoom()
++{
++    m_zoomFactor = 1.0;
++    m_panOffset = QPointF(0, 0);
++    m_dragging = false;
++    setCursor(Qt::ArrowCursor);
++}
++
++QRectF QuickLookOverlay::baseContentRect() const
 +{
 +    const int maxW = width() - 2 * ContentPadding;
 +    const int maxH = height() - 2 * ContentPadding - BottomExtraSpace;
@@ -729,17 +1044,32 @@ index 000000000..307575831
 +
 +    contentSize.scale(maxW, maxH, Qt::KeepAspectRatio);
 +
-+    const int x = (width() - contentSize.width()) / 2;
-+    const int y = (height() - contentSize.height()) / 2 - ContentVerticalShift;
++    const qreal x = (width() - contentSize.width()) / 2.0;
++    const qreal y = (height() - contentSize.height()) / 2.0 - ContentVerticalShift;
 +
-+    return {x, y, contentSize.width(), contentSize.height()};
++    return {x, y, static_cast<qreal>(contentSize.width()), static_cast<qreal>(contentSize.height())};
++}
++
++QRect QuickLookOverlay::scaledContentRect() const
++{
++    const QRectF base = baseContentRect();
++    if (base.isEmpty()) {
++        return {};
++    }
++
++    const qreal w = base.width() * m_zoomFactor;
++    const qreal h = base.height() * m_zoomFactor;
++    const qreal cx = base.center().x() + m_panOffset.x();
++    const qreal cy = base.center().y() + m_panOffset.y();
++
++    return QRectF(cx - w / 2.0, cy - h / 2.0, w, h).toRect();
 +}
 diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
 new file mode 100644
-index 000000000..343363e7d
+index 000000000..67e63e4a5
 --- /dev/null
 +++ b/src/views/quicklookoverlay.h
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,161 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -753,9 +1083,20 @@ index 000000000..343363e7d
 +#include <QUrl>
 +#include <QEasingCurve>
 +#include <QElapsedTimer>
++#include <QPointF>
++
++#include <memory>
++#include <QFutureWatcher>
 +
 +class QLabel;
 +class QTimer;
++
++#ifdef HAVE_POPPLER
++namespace Poppler {
++class Document;
++class Page;
++}
++#endif
 +
 +#ifdef HAVE_QTMULTIMEDIA
 +class QMediaPlayer;
@@ -786,6 +1127,10 @@ index 000000000..343363e7d
 +protected:
 +    void paintEvent(QPaintEvent *event) override;
 +    void mouseDoubleClickEvent(QMouseEvent *event) override;
++    void mousePressEvent(QMouseEvent *event) override;
++    void mouseMoveEvent(QMouseEvent *event) override;
++    void mouseReleaseEvent(QMouseEvent *event) override;
++    void wheelEvent(QWheelEvent *event) override;
 +    void keyPressEvent(QKeyEvent *event) override;
 +    void resizeEvent(QResizeEvent *event) override;
 +
@@ -818,7 +1163,14 @@ index 000000000..343363e7d
 +#endif
 +
 +    void advanceAnimation();
++    void advanceZoomAnimation();
 +    void onAnimationFinished();
++    QRectF baseContentRect() const;
++    void resetZoom();
++    void animateZoomReset();
++    void scheduleHiResRerender();
++    void rerenderHiRes();
++    void onHiResRenderFinished();
 +
 +    QPixmap m_pixmap;
 +    QUrl m_currentUrl;
@@ -826,6 +1178,38 @@ index 000000000..343363e7d
 +    bool m_active;
 +    ContentType m_contentType;
 +    QString m_statusText;
++
++    // Progressive rendering (PDF + Image)
++    QString m_pdfFilePath;
++    QString m_imageFilePath;
++    QSize m_imageOriginalSize;
++    QTimer *m_pdfRenderTimer = nullptr;
++    qreal m_pdfRenderedDpi = 0.0;
++#ifdef HAVE_POPPLER
++    std::unique_ptr<Poppler::Document> m_pdfDocument;
++    std::unique_ptr<Poppler::Page> m_pdfPage;
++#endif
++    QPixmap m_hiResLowResPixmap;
++    qreal m_hiResCrossfade = 1.0;
++    bool m_hiResCrossfading = false;
++    QElapsedTimer m_hiResFadeTimer;
++    int m_imageRenderedWidth = 0;
++    QFutureWatcher<QImage> m_renderWatcher;
++    qreal m_renderTargetDpi = 0.0;
++    bool m_renderPending = false;
++
++    // Zoom & pan
++    qreal m_zoomFactor = 1.0;
++    QPointF m_panOffset;
++    bool m_dragging = false;
++    QPointF m_lastMousePos;
++
++    // Zoom reset animation
++    bool m_zoomAnimating = false;
++    QElapsedTimer m_zoomAnimTimer;
++    qreal m_zoomAnimStartFactor = 1.0;
++    QPointF m_zoomAnimStartPan;
++    int m_zoomAnimDuration = 200;
 +
 +    // Frame-driven animation (syncs with monitor refresh rate)
 +    QElapsedTimer m_animTimer;
