@@ -1,0 +1,337 @@
+diff --git a/src/views/quicklookglrenderer.cpp b/src/views/quicklookglrenderer.cpp
+index df8da0ac4..02782f420 100644
+--- a/src/views/quicklookglrenderer.cpp
++++ b/src/views/quicklookglrenderer.cpp
+@@ -11,6 +11,7 @@
+ #include <QOpenGLContext>
+ #include <QOpenGLFunctions>
+ #include <QPainter>
++#include <QPainterPath>
+ #include <QPolygonF>
+ 
+ namespace
+@@ -98,27 +99,26 @@ const char *fragmentShaderSource = R"(
+                 texColor = texture2D(u_texture0, contentUV);
+             }
+ 
+-            // Unsharp mask sharpening
++            // Gaussian 3x3 unsharp mask (smooth, no halo artifacts)
+             if (u_sharpen > 0.0) {
+-                vec4 n = texture2D(u_texture0, contentUV + vec2(0.0, u_texelSize.y))
+-                       + texture2D(u_texture0, contentUV - vec2(0.0, u_texelSize.y))
+-                       + texture2D(u_texture0, contentUV + vec2(u_texelSize.x, 0.0))
+-                       + texture2D(u_texture0, contentUV - vec2(u_texelSize.x, 0.0));
+-                vec4 blurred = n * 0.25;
+-                texColor = texColor + (texColor - blurred) * u_sharpen;
++                vec4 sum = texture2D(u_texture0, contentUV + vec2(-u_texelSize.x, -u_texelSize.y)) * 0.0625
++                         + texture2D(u_texture0, contentUV + vec2(0.0, -u_texelSize.y)) * 0.125
++                         + texture2D(u_texture0, contentUV + vec2(u_texelSize.x, -u_texelSize.y)) * 0.0625
++                         + texture2D(u_texture0, contentUV + vec2(-u_texelSize.x, 0.0)) * 0.125
++                         + texture2D(u_texture0, contentUV) * 0.25
++                         + texture2D(u_texture0, contentUV + vec2(u_texelSize.x, 0.0)) * 0.125
++                         + texture2D(u_texture0, contentUV + vec2(-u_texelSize.x, u_texelSize.y)) * 0.0625
++                         + texture2D(u_texture0, contentUV + vec2(0.0, u_texelSize.y)) * 0.125
++                         + texture2D(u_texture0, contentUV + vec2(u_texelSize.x, u_texelSize.y)) * 0.0625;
++                texColor = texColor + (texColor - sum) * u_sharpen;
+                 texColor = clamp(texColor, 0.0, 1.0);
+             }
+ 
+             // Composite: bg + shadow (outside content) + content
+             result = mix(result, shadow, shadow.a * (1.0 - contentMask));
+ 
+-            // Checkerboard background for transparent areas
+-            float checker = mod(floor(pixelPos.x / 8.0) + floor(pixelPos.y / 8.0), 2.0);
+-            vec3 transBg = mix(vec3(0.25), vec3(0.35), checker);
+-
+-            // Blend image over checkerboard using source alpha
+-            vec3 composited = mix(transBg, texColor.rgb, texColor.a);
+-            result = mix(result, vec4(composited, 1.0), contentMask * u_opacity);
++            // Blend content over background (transparent areas show dark overlay)
++            result = mix(result, vec4(texColor.rgb, 1.0), contentMask * u_opacity * texColor.a);
+ 
+             // Text overlay
+             if (u_hasText) {
+@@ -225,7 +225,7 @@ protected:
+             const float texW = static_cast<float>(m_renderer->m_textureSize[0].width());
+             const float texH = static_cast<float>(m_renderer->m_textureSize[0].height());
+             shader->setUniformValue("u_texelSize", QVector2D(1.0f / qMax(1.0f, texW), 1.0f / qMax(1.0f, texH)));
+-            shader->setUniformValue("u_sharpen", 0.4f);
++            shader->setUniformValue("u_sharpen", 0.2f);
+         } else {
+             shader->setUniformValue("u_sharpen", 0.0f);
+         }
+@@ -261,6 +261,42 @@ protected:
+         glActiveTexture(GL_TEXTURE0);
+         glBindTexture(GL_TEXTURE_2D, 0);
+ 
++        // Draw PDF loading spinner using QPainter overlay
++        if (state.pdfPageLoading && state.animationProgress > 0.5) {
++            QPainter spinPainter(this);
++            spinPainter.setRenderHint(QPainter::Antialiasing);
++
++            const qreal spinnerSize = 40.0;
++            const qreal penWidth = 3.0;
++            const QPointF center = state.drawRect.center();
++            const QRectF spinnerRect(center.x() - spinnerSize / 2.0, center.y() - spinnerSize / 2.0, spinnerSize, spinnerSize);
++            const QRectF strokeRect = spinnerRect.adjusted(penWidth / 2.0, penWidth / 2.0, -penWidth / 2.0, -penWidth / 2.0);
++
++            // Dim overlay on content
++            spinPainter.setOpacity(state.animationProgress * 0.3);
++            QPainterPath contentClip;
++            contentClip.addRoundedRect(state.drawRect, 6, 6);
++            spinPainter.setClipPath(contentClip);
++            spinPainter.fillRect(state.drawRect.toRect(), QColor(0, 0, 0));
++            spinPainter.setClipping(false);
++
++            // Smooth gradient spinner (conical gradient = no jagged edges)
++            spinPainter.setOpacity(state.animationProgress * 0.9);
++            QConicalGradient gradient(center, state.spinnerAngle);
++            gradient.setColorAt(0.0, QColor(255, 255, 255, 230));
++            gradient.setColorAt(0.65, QColor(255, 255, 255, 40));
++            gradient.setColorAt(0.75, QColor(255, 255, 255, 0));
++            gradient.setColorAt(1.0, QColor(255, 255, 255, 0));
++
++            QPen spinnerPen(QBrush(gradient), penWidth, Qt::SolidLine, Qt::RoundCap);
++            spinPainter.setPen(spinnerPen);
++            spinPainter.setBrush(Qt::NoBrush);
++            spinPainter.drawEllipse(strokeRect);
++
++            spinPainter.setOpacity(1.0);
++            spinPainter.end();
++        }
++
+         // Draw PDF navigation arrows using QPainter overlay
+         if (state.showPdfArrows && state.animationProgress > 0.5) {
+             QPainter painter(this);
+diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
+index 9ea0e4bdc..94a7f0456 100644
+--- a/src/views/quicklookoverlay.cpp
++++ b/src/views/quicklookoverlay.cpp
+@@ -160,6 +160,7 @@ void QuickLookOverlay::cancelPendingRenders()
+     m_pageRenderWatcher.waitForFinished();
+     m_pageRenderPending = false;
+ 
++    stopPdfSpinner();
+     m_pdfRenderTimer->stop();
+ }
+ 
+@@ -363,6 +364,31 @@ void QuickLookOverlay::updatePdfStatusText()
+     m_statusText = (m_pdfTotalPages > 1) ? QStringLiteral(" — Page %1 of %2").arg(m_pdfCurrentPage + 1).arg(m_pdfTotalPages) : QStringLiteral(" — 1 page");
+ }
+ 
++void QuickLookOverlay::startPdfSpinner()
++{
++    if (!m_spinnerTimer) {
++        m_spinnerTimer = new QTimer(this);
++        connect(m_spinnerTimer, &QTimer::timeout, this, [this]() {
++            m_spinnerAngle += 30.0;
++            if (m_spinnerAngle >= 360.0) {
++                m_spinnerAngle -= 360.0;
++            }
++            update();
++        });
++    }
++    m_spinnerAngle = 0.0;
++    m_spinnerTimer->start(50);
++}
++
++void QuickLookOverlay::stopPdfSpinner()
++{
++    if (m_spinnerTimer) {
++        m_spinnerTimer->stop();
++    }
++    m_pdfPageLoading = false;
++    m_spinnerAngle = 0.0;
++}
++
+ void QuickLookOverlay::navigatePdfPage(int direction)
+ {
+ #ifdef HAVE_POPPLER
+@@ -375,14 +401,42 @@ void QuickLookOverlay::navigatePdfPage(int direction)
+         return;
+     }
+ 
+-    if (m_pageRenderPending) {
++    if (m_pageRenderPending || m_pdfPageLoading) {
+         return;
+     }
+ 
+     m_pdfRenderTimer->stop();
+     resetZoom();
+-    renderPdfPage(newPage);
+-    m_pdfRenderTimer->start(PdfPageRenderDelayMs);
++
++    m_pdfCurrentPage = newPage;
++    m_pdfPage = m_pdfDocument->page(newPage);
++    m_hiResLowResImage = QImage();
++    m_hiResCrossfading = false;
++    updatePdfStatusText();
++
++    // Check cache — if cached, crossfade immediately
++    const QImage cached = pdfCacheLookup(newPage);
++    if (!cached.isNull()) {
++        m_crossfadeOldImage = m_contentImage;
++        m_contentImage = cached;
++        m_pixmap = QPixmap::fromImage(cached);
++        m_pdfRenderedDpi = PdfBaseDpi;
++
++        uploadCrossfadeToRenderer(m_contentImage, m_crossfadeOldImage);
++        m_hiResCrossfade = 0.0;
++        m_hiResCrossfading = true;
++        m_hiResFadeTimer.start();
++
++        m_pdfRenderTimer->start(PdfPageRenderDelayMs);
++        prefetchAdjacentPages();
++        update();
++        return;
++    }
++
++    // Not cached — async render with loading spinner
++    m_pdfPageLoading = true;
++    startPdfSpinner();
++    renderPdfPageAsync(newPage);
+     update();
+ #else
+     Q_UNUSED(direction)
+@@ -439,6 +493,10 @@ void QuickLookOverlay::onPdfPageRenderFinished()
+     pdfCacheInsert(targetPage, image);
+ 
+     if (targetPage == m_pdfCurrentPage) {
++        if (m_pdfPageLoading) {
++            stopPdfSpinner();
++        }
++
+         m_hiResLowResImage = m_contentImage;
+         m_crossfadeOldImage = m_contentImage;
+         m_contentImage = image;
+@@ -450,6 +508,8 @@ void QuickLookOverlay::onPdfPageRenderFinished()
+         m_hiResCrossfade = 0.0;
+         m_hiResCrossfading = true;
+         m_hiResFadeTimer.start();
++
++        m_pdfRenderTimer->start(PdfPageRenderDelayMs);
+         update();
+     }
+ 
+@@ -1049,8 +1109,10 @@ void QuickLookOverlay::paintEvent(QPaintEvent *event)
+         state.showPdfArrows = true;
+         state.pdfArrowUpRect = QRect(arrowX, centerY - arrowSize - 4, arrowSize, arrowSize);
+         state.pdfArrowDownRect = QRect(arrowX, centerY + 4, arrowSize, arrowSize);
+-        state.canGoUp = m_pdfCurrentPage > 0;
+-        state.canGoDown = m_pdfCurrentPage < m_pdfTotalPages - 1;
++        state.canGoUp = m_pdfCurrentPage > 0 && !m_pdfPageLoading;
++        state.canGoDown = m_pdfCurrentPage < m_pdfTotalPages - 1 && !m_pdfPageLoading;
++        state.pdfPageLoading = m_pdfPageLoading;
++        state.spinnerAngle = m_spinnerAngle;
+ 
+         m_pdfArrowUpRect = state.pdfArrowUpRect;
+         m_pdfArrowDownRect = state.pdfArrowDownRect;
+@@ -1075,7 +1137,7 @@ void QuickLookOverlay::mouseDoubleClickEvent(QMouseEvent *event)
+ 
+ void QuickLookOverlay::mousePressEvent(QMouseEvent *event)
+ {
+-    if (event->button() == Qt::LeftButton && m_contentType == ContentType::Pdf && m_pdfTotalPages > 1) {
++    if (event->button() == Qt::LeftButton && m_contentType == ContentType::Pdf && m_pdfTotalPages > 1 && !m_pdfPageLoading) {
+         const QPoint pos = event->pos();
+         if (m_pdfArrowUpRect.contains(pos) && m_pdfCurrentPage > 0) {
+             navigatePdfPage(-1);
+diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
+index 3a5b079a3..2b1951e06 100644
+--- a/src/views/quicklookoverlay.h
++++ b/src/views/quicklookoverlay.h
+@@ -99,6 +99,8 @@ private:
+     void onPdfPageRenderFinished();
+     void prefetchAdjacentPages();
+     void updatePdfStatusText();
++    void startPdfSpinner();
++    void stopPdfSpinner();
+     qreal computePdfDisplayDpi(const QSizeF &pageSizePoints) const;
+ 
+ #ifdef HAVE_QTMULTIMEDIA
+@@ -173,6 +175,11 @@ private:
+     int m_pageRenderTargetPage = -1;
+     bool m_pageRenderPending = false;
+ 
++    // PDF page loading spinner
++    bool m_pdfPageLoading = false;
++    qreal m_spinnerAngle = 0.0;
++    QTimer *m_spinnerTimer = nullptr;
++
+     // Zoom & pan
+     qreal m_zoomFactor = 1.0;
+     QPointF m_panOffset;
+diff --git a/src/views/quicklookrenderer.h b/src/views/quicklookrenderer.h
+index 453db37b7..11ace2486 100644
+--- a/src/views/quicklookrenderer.h
++++ b/src/views/quicklookrenderer.h
+@@ -39,6 +39,8 @@ public:
+         QRect pdfArrowDownRect;
+         bool canGoUp = false;
+         bool canGoDown = false;
++        bool pdfPageLoading = false;
++        qreal spinnerAngle = 0.0;
+     };
+ 
+     virtual void initialize() = 0;
+diff --git a/src/views/quicklookswrenderer.cpp b/src/views/quicklookswrenderer.cpp
+index 1450715e3..b62ca8aee 100644
+--- a/src/views/quicklookswrenderer.cpp
++++ b/src/views/quicklookswrenderer.cpp
+@@ -110,21 +110,6 @@ void QuickLookSWRenderer::render(const RenderState &state)
+     clipPath.addRoundedRect(drawRect, CornerRadius, CornerRadius);
+     painter.setClipPath(clipPath);
+ 
+-    // Checkerboard background for transparent images
+-    if (m_pixmap.hasAlpha()) {
+-        const int checkerSize = 8;
+-        const QColor light(90, 90, 90);
+-        const QColor dark(64, 64, 64);
+-        const QRect target = drawRect.toRect();
+-        for (int y = target.top(); y < target.bottom(); y += checkerSize) {
+-            for (int x = target.left(); x < target.right(); x += checkerSize) {
+-                const bool isDark = ((x - target.left()) / checkerSize + (y - target.top()) / checkerSize) % 2;
+-                const QRect cell(x, y, qMin(checkerSize, target.right() - x), qMin(checkerSize, target.bottom() - y));
+-                painter.fillRect(cell, isDark ? dark : light);
+-            }
+-        }
+-    }
+-
+     // Crossfade blend
+     if (state.hiResCrossfade < 1.0 && !m_crossfadeOldPixmap.isNull()) {
+         painter.setOpacity(state.animationProgress * (1.0 - state.hiResCrossfade));
+@@ -145,6 +130,35 @@ void QuickLookSWRenderer::render(const RenderState &state)
+     const QRect textRect(0, state.anchorRect.bottom() + TextSpacing, state.widgetSize.width(), TextHeight);
+     painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, state.labelText);
+ 
++    // PDF loading spinner
++    if (state.pdfPageLoading && state.animationProgress > 0.5) {
++        const qreal spinnerSize = 40.0;
++        const qreal penWidth = 3.0;
++        const QPointF center = drawRect.center();
++        const QRectF spinnerRect(center.x() - spinnerSize / 2.0, center.y() - spinnerSize / 2.0, spinnerSize, spinnerSize);
++        const QRectF strokeRect = spinnerRect.adjusted(penWidth / 2.0, penWidth / 2.0, -penWidth / 2.0, -penWidth / 2.0);
++
++        // Dim overlay on content
++        painter.setOpacity(state.animationProgress * 0.3);
++        painter.setClipPath(clipPath);
++        painter.fillRect(drawRect.toRect(), QColor(0, 0, 0));
++        painter.setClipping(false);
++
++        // Smooth gradient spinner (conical gradient = no jagged edges)
++        painter.setOpacity(state.animationProgress * 0.9);
++        QConicalGradient gradient(center, state.spinnerAngle);
++        gradient.setColorAt(0.0, QColor(255, 255, 255, 230));
++        gradient.setColorAt(0.65, QColor(255, 255, 255, 40));
++        gradient.setColorAt(0.75, QColor(255, 255, 255, 0));
++        gradient.setColorAt(1.0, QColor(255, 255, 255, 0));
++
++        QPen spinnerPen(QBrush(gradient), penWidth, Qt::SolidLine, Qt::RoundCap);
++        painter.setPen(spinnerPen);
++        painter.setBrush(Qt::NoBrush);
++        painter.drawEllipse(strokeRect);
++        painter.setOpacity(1.0);
++    }
++
+     // PDF navigation arrows
+     if (state.showPdfArrows && state.animationProgress > 0.5) {
+         const int arrowSize = 36;
