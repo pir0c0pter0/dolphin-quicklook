@@ -1,6 +1,6 @@
 # Dolphin Quick Look
 
-**macOS-style Quick Look for KDE Dolphin.** Double-click an image to preview it inline with a smooth animation. Double-click again (or press `Escape`) to return to the file list.
+**macOS-style Quick Look for KDE Dolphin.** Double-click an image, PDF, or video to preview it inline with smooth animations. Double-click again (or press `Escape`) to return to the file list.
 
 No external apps. No popups. Everything happens inside Dolphin.
 
@@ -8,23 +8,81 @@ No external apps. No popups. Everything happens inside Dolphin.
 
 ## Features
 
-- **Inline preview** — images open directly in the file list area, not in a separate window
-- **Smooth animations** — zoom-in/zoom-out transitions (250ms, cubic ease-out) with frame-driven rendering that syncs with your monitor's refresh rate (supports 60Hz, 120Hz, 144Hz, 240Hz+)
-- **Dark overlay** — semi-transparent background keeps focus on the image
-- **Rounded corners & drop shadow** — clean, modern look
+### Core
+
+- **Inline preview** — files open directly in the file list area, not in a separate window
+- **Smooth animations** — zoom-in/zoom-out transitions (250ms, cubic ease-out) with frame-driven rendering that syncs with your monitor's refresh rate (60Hz, 120Hz, 144Hz, 240Hz+)
+- **Fade-out on close** — preview fades and scales down smoothly instead of disappearing abruptly
+- **Dark overlay** — semi-transparent background keeps focus on the content
+- **Rounded corners & drop shadow** — clean, modern look with dynamic shadow based on animation progress
 - **Filename display** — shown below the preview
-- **Keyboard support** — `Escape` or `Space` to dismiss
-- **Multiple formats** — images, PDFs, and videos (see [Supported Formats](#supported-formats))
-- **PDF preview** — renders the first page with page count (requires Poppler)
-- **Video preview** — inline playback with looping and audio (requires Qt Multimedia)
+
+### GPU-Accelerated Rendering
+
+- **Automatic GPU detection** — probes OpenGL 2.1+ / ES 2.0+ at startup, falls back to software if unavailable (llvmpipe, softpipe, swrast are detected and bypassed)
+- **GLSL shader pipeline** — rounded rectangle SDF masking, Gaussian 3x3 unsharp mask sharpening (strength 0.2), crossfade transitions, and text overlay — all in a single fragment shader pass
+- **Software fallback** — pure QPainter rendering path provides identical visuals on systems without GPU support
+
+### Image Preview
+
+- **All Qt-supported formats** — PNG, JPEG, GIF, BMP, WebP, SVG, TIFF, ICO, AVIF, HEIF/HEIC, JXL, and more
+- **Transparent PNG support** — alpha channel is preserved and composited over the dark overlay
+- **Image sharpening** — subtle GPU-accelerated unsharp mask (3x3 Gaussian kernel) for crisp rendering
+- **Large image protection** — images larger than 4K are capped at 3840x2160 to prevent OOM
+- **HEIF/HEIC detection** — warns when files cannot be opened due to missing `libheif` / `qt6-imageformats`
+
+### Zoom
+
+- **Scroll wheel zoom** — zoom from 1.0x to 5.0x in 0.15x increments
+- **Cursor-centered** — zoom follows your mouse position, not the image center
+- **Click & drag pan** — move around zoomed images with left-click drag (cursor changes to open hand)
+- **Right-click reset** — smoothly animates back to 1.0x with a 200ms transition
+- **Progressive rendering** — triggers high-resolution re-render at each new zoom level for sharp details
+
+### PDF Preview (optional — requires Poppler)
+
+- **First page preview** — renders the first page at 216 DPI for instant display
+- **Multi-page navigation** — browse pages with arrow keys, Page Up/Down, or clickable arrow buttons
+- **Page indicator** — displays "Page X of Y" below the preview
+- **Async loading** — pages render in a background thread; main UI stays responsive
+- **Loading spinner** — smooth rotating conical gradient animation while pages load
+- **Page cache** — LRU cache holds up to 5 pages with automatic adjacent-page prefetching
+- **Crossfade transitions** — 150ms blend between pages for smooth navigation
+- **Timeout protection** — auto-closes if a page fails to load within 3 seconds
+
+### Video Preview (optional — requires Qt Multimedia)
+
+- **Inline playback** — videos play directly in the overlay, no external player
+- **Looping** — continuous playback, restarts automatically
+- **Audio** — plays at 50% volume by default
+- **Smart loading** — extracts first frame as thumbnail, then starts playback after animation completes
+- **Timeout protection** — auto-closes if first frame doesn't arrive within 3 seconds
+
+### HiDPI Support
+
+- **DPI-aware text** — labels rendered at full device pixel ratio
+- **Physical pixel coordinates** — all GL shader uniforms and texture uploads respect `devicePixelRatioF()`
+- **Sharp on any display** — no blurry scaling on 2x/3x HiDPI screens
+
+### Stability
+
+- **Race condition protection** — async renders are canceled and awaited before content switches or destruction
+- **Page navigation guard** — stale render results are discarded if the user navigated away
+- **Active state checks** — async callbacks bail out if the preview was closed
+- **Video phase management** — enum-based state machine prevents frame processing conflicts
+- **Null guards** — defensive checks throughout to prevent crashes on edge cases
 
 ## Demo
 
 | Action | Result |
 |--------|--------|
 | Double-click image/PDF/video | Preview opens with zoom-in animation |
-| Double-click preview | Preview closes with zoom-out animation |
+| Double-click preview | Preview closes with fade-out animation |
 | Press `Escape` or `Space` | Preview closes |
+| Scroll wheel over preview | Zoom in/out (1x-5x) |
+| Drag while zoomed | Pan the image |
+| Right-click while zoomed | Reset zoom to 1x |
+| Up/Down arrows (PDF) | Navigate pages |
 
 ## Installation
 
@@ -121,14 +179,19 @@ sudo xbps-install -f dolphin
 
 ## How It Works
 
-The patch adds two files and modifies three existing ones in Dolphin's source:
+The patch adds new files and modifies existing ones in Dolphin's source:
 
 ### New Files
 
 | File | Purpose |
 |------|---------|
-| `src/views/quicklookoverlay.h` | Header for the Quick Look overlay widget |
-| `src/views/quicklookoverlay.cpp` | Implementation: rendering, animation, input handling |
+| `src/views/quicklookoverlay.h` | Quick Look overlay widget header |
+| `src/views/quicklookoverlay.cpp` | Overlay logic: content loading, animation, input handling |
+| `src/views/quicklookglrenderer.h` | GPU renderer header (OpenGL) |
+| `src/views/quicklookglrenderer.cpp` | GPU-accelerated rendering via GLSL shaders |
+| `src/views/quicklookrenderer.h` | Abstract renderer base class |
+| `src/views/quicklookswrenderer.h` | Software renderer header |
+| `src/views/quicklookswrenderer.cpp` | CPU-based rendering via QPainter |
 
 ### Modified Files
 
@@ -136,7 +199,7 @@ The patch adds two files and modifies three existing ones in Dolphin's source:
 |------|--------|
 | `src/views/dolphinview.h` | Added `QuickLookOverlay` member and forward declaration |
 | `src/views/dolphinview.cpp` | Intercepts double-click on supported files to show overlay instead of opening external app |
-| `src/CMakeLists.txt` | Added `quicklookoverlay.cpp` to the build, optional Poppler/Qt Multimedia |
+| `src/CMakeLists.txt` | Added Quick Look sources, optional Poppler/Qt Multimedia |
 | `CMakeLists.txt` | Added optional `find_package` for Poppler and Qt Multimedia |
 
 ### Architecture
@@ -144,19 +207,19 @@ The patch adds two files and modifies three existing ones in Dolphin's source:
 ```
 DolphinView
   └── m_topLayout (QVBoxLayout)
-        └── m_container (KItemListContainer)  ← file list lives here
-              └── QuickLookOverlay             ← our overlay, parented to container
+        └── m_container (KItemListContainer)  <- file list lives here
+              └── QuickLookOverlay             <- our overlay, parented to container
+                    ├── QuickLookGLRenderer    <- GPU path (default)
+                    └── QuickLookSWRenderer    <- CPU fallback
 ```
 
 When a supported file is double-clicked:
 
 1. `DolphinView::slotItemActivated()` checks the MIME type
 2. If it's a supported type, `QuickLookOverlay::showPreview()` is called
-3. The overlay resizes to fill the container and renders the image with a `QPropertyAnimation`
+3. The overlay resizes to fill the container and renders the content with a `QPropertyAnimation`
 4. The file list remains underneath — it's just covered by the overlay
 5. Double-click or `Escape` triggers `hidePreview()` which animates back out
-
-The overlay uses custom `QPainter` rendering for smooth animations, rounded corners, and drop shadows without requiring QML or external dependencies.
 
 ## Supported Formats
 
@@ -183,15 +246,15 @@ Any format supported by Qt's `QImageReader`, including:
 
 > **Note:** AVIF, HEIF/HEIC, and JXL support depends on Qt image plugins installed on your system (e.g., `qt6-imageformats` or `kimageformats`).
 
-### PDF (optional — requires Poppler)
+### PDF (optional -- requires Poppler)
 
 | Format | Extension | MIME Type |
 |--------|-----------|-----------|
 | PDF | `.pdf` | `application/pdf` |
 
-Renders the first page as a preview with page count displayed. Requires `poppler-qt6` at build time.
+Renders pages with navigation. Requires `poppler-qt6` at build time.
 
-### Video (optional — requires Qt Multimedia)
+### Video (optional -- requires Qt Multimedia)
 
 | Format | Extension | MIME Type |
 |--------|-----------|-----------|
@@ -214,10 +277,11 @@ Videos play inline with looping and audio. Requires `qt6-multimedia` at build ti
 ## Roadmap
 
 - [x] Inline image preview with animation
-- [x] PDF preview (via Poppler)
-- [x] Video preview (embedded player)
-- [ ] Arrow key navigation (next/previous file while preview is open)
-- [ ] Zoom with scroll wheel
+- [x] PDF preview with multi-page navigation
+- [x] Video preview with inline playback
+- [x] GPU-accelerated rendering with software fallback
+- [x] Zoom with scroll wheel and pan
+- [x] HiDPI support
 - [ ] Submit as upstream KDE Merge Request
 
 ## Contributing
@@ -231,7 +295,7 @@ Contributions are welcome! This is a proof-of-concept that could become a native
 
 ## License
 
-GPL-2.0-or-later — same as KDE Dolphin.
+GPL-2.0-or-later -- same as KDE Dolphin.
 
 ## Credits
 
