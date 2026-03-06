@@ -1,54 +1,223 @@
-diff --git a/src/views/quicklookglrenderer.cpp b/src/views/quicklookglrenderer.cpp
-index 321752de3..168c8eb27 100644
---- a/src/views/quicklookglrenderer.cpp
-+++ b/src/views/quicklookglrenderer.cpp
-@@ -220,9 +220,15 @@ protected:
-         shader->setUniformValue("u_resolution", QVector2D(w, h));
-         shader->setUniformValue("u_opacity", static_cast<float>(state.animationProgress));
-         shader->setUniformValue("u_bgAlpha", static_cast<float>(BgAlphaMax) / 255.0f);
--        shader->setUniformValue("u_shadowAlpha", static_cast<float>(ShadowAlphaMax) / 255.0f);
--        shader->setUniformValue("u_shadowOffset", static_cast<float>(ShadowOffset * state.animationProgress) * dpr);
--        shader->setUniformValue("u_cornerRadius", static_cast<float>(CornerRadius) * dpr);
-+        if (state.isAudioContent) {
-+            shader->setUniformValue("u_shadowAlpha", 0.0f);
-+            shader->setUniformValue("u_shadowOffset", 0.0f);
-+            shader->setUniformValue("u_cornerRadius", 0.0f);
-+        } else {
-+            shader->setUniformValue("u_shadowAlpha", static_cast<float>(ShadowAlphaMax) / 255.0f);
-+            shader->setUniformValue("u_shadowOffset", static_cast<float>(ShadowOffset * state.animationProgress) * dpr);
-+            shader->setUniformValue("u_cornerRadius", static_cast<float>(CornerRadius) * dpr);
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 4faabe9d5..80e01dc07 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -111,6 +111,11 @@ target_sources(dolphinprivate PRIVATE
+     views/dolphinremoteencoding.cpp
+     views/dolphinview.cpp
+     views/dolphinviewactionhandler.cpp
++    views/quicklookoverlay.cpp
++    views/quicklookoverlay.h
++    views/quicklookrenderer.h
++    views/quicklookswrenderer.cpp
++    views/quicklookswrenderer.h
+     views/draganddrophelper.cpp
+     views/versioncontrol/updateitemstatesthread.cpp
+     views/versioncontrol/versioncontrolobserver.cpp
+@@ -237,6 +242,29 @@ target_link_libraries(
+     ${FTS_LIB}
+ )
+ 
++if(POPPLER_QT6_FOUND)
++    target_compile_definitions(dolphinprivate PRIVATE HAVE_POPPLER)
++    target_include_directories(dolphinprivate PRIVATE ${POPPLER_QT6_INCLUDE_DIRS})
++    target_link_libraries(dolphinprivate PRIVATE ${POPPLER_QT6_LIBRARIES})
++endif()
++
++if(HAVE_QTMULTIMEDIA)
++    target_compile_definitions(dolphinprivate PRIVATE HAVE_QTMULTIMEDIA)
++    target_link_libraries(dolphinprivate PRIVATE Qt6::Multimedia Qt6::MultimediaWidgets)
++endif()
++
++if(HAVE_OPENGL)
++    target_sources(dolphinprivate PRIVATE
++        views/quicklookglrenderer.cpp
++        views/quicklookglrenderer.h
++    )
++    target_compile_definitions(dolphinprivate PRIVATE HAVE_OPENGL)
++    target_link_libraries(dolphinprivate PRIVATE
++        Qt6::OpenGLWidgets
++        OpenGL::GL
++    )
++endif()
++
+ if(HAVE_BALOO)
+     target_link_libraries(
+         dolphinprivate PUBLIC
+@@ -438,10 +466,12 @@ if(HAVE_BALOO)
+         panels/information/dolphin_informationpanelsettings.kcfgc
+     )
+ 
+-    target_link_libraries(dolphinstatic
+-        Qt::Multimedia
+-        Qt::MultimediaWidgets
+-    )
++    if(HAVE_QTMULTIMEDIA)
++        target_link_libraries(dolphinstatic
++            Qt::Multimedia
++            Qt::MultimediaWidgets
++        )
++    endif()
+ endif()
+ 
+ if(HAVE_KUSERFEEDBACK)
+diff --git a/src/views/dolphinview.cpp b/src/views/dolphinview.cpp
+index b01833d69..aa41cb6c4 100644
+--- a/src/views/dolphinview.cpp
++++ b/src/views/dolphinview.cpp
+@@ -22,6 +22,7 @@
+ #include "kitemviews/kitemlistheader.h"
+ #include "kitemviews/kitemlistselectionmanager.h"
+ #include "kitemviews/private/kitemlistroleeditor.h"
++#include "quicklookoverlay.h"
+ #include "selectionmode/singleclickselectionproxystyle.h"
+ #include "settings/viewmodes/viewmodesettings.h"
+ #include "versioncontrol/versioncontrolobserver.h"
+@@ -105,6 +106,7 @@ DolphinView::DolphinView(const QUrl &url, QWidget *parent)
+     , m_twoClicksRenamingTimer(nullptr)
+     , m_placeholderLabel(nullptr)
+     , m_showLoadingPlaceholderTimer(nullptr)
++    , m_quickLookOverlay(nullptr)
+ {
+     m_topLayout = new QVBoxLayout(this);
+     m_topLayout->setSpacing(0);
+@@ -252,6 +254,13 @@ DolphinView::DolphinView(const QUrl &url, QWidget *parent)
+     applyViewProperties();
+     m_topLayout->addWidget(m_container);
+ 
++    // Quick Look overlay for inline image preview
++    m_quickLookOverlay = new QuickLookOverlay(m_container);
++    m_quickLookOverlay->hide();
++    connect(m_quickLookOverlay, &QuickLookOverlay::previewClosed, this, [this]() {
++        m_container->setFocus();
++    });
++
+     loadDirectory(url);
+ }
+ 
+@@ -1045,6 +1054,12 @@ bool DolphinView::eventFilter(QObject *watched, QEvent *event)
+         }
+         break;
+ 
++    case QEvent::Resize:
++        if (watched == m_container && m_quickLookOverlay && m_quickLookOverlay->isPreviewActive()) {
++            m_quickLookOverlay->resize(m_container->size());
 +        }
++        break;
++
+     case QEvent::ToolTip: {
+         const auto helpEvent = static_cast<QHelpEvent *>(event);
+         if (tryShowNameToolTip(helpEvent)) {
+@@ -1127,6 +1142,14 @@ void DolphinView::slotItemActivated(int index)
  
-         // Sharpening: texel size in UV space (1/texturePixels)
-         if (m_renderer->m_textureValid[0] && m_renderer->m_textures[0]) {
+     const KFileItem item = m_model->fileItem(index);
+     if (!item.isNull()) {
++        /// Quick Look: intercept supported files and show inline preview
++        const QString mimeType = item.mimetype();
++        if (m_quickLookOverlay && QuickLookOverlay::isSupportedMimeType(mimeType)) {
++            m_quickLookOverlay->resize(m_container->size());
++            if (m_quickLookOverlay->showPreview(item.url())) {
++                return;
++            }
++        }
+         Q_EMIT itemActivated(item);
+     }
+ }
+diff --git a/src/views/dolphinview.h b/src/views/dolphinview.h
+index e3f83979c..3dbeaa60d 100644
+--- a/src/views/dolphinview.h
++++ b/src/views/dolphinview.h
+@@ -40,6 +40,7 @@ class QGraphicsSceneDragDropEvent;
+ class QHelpEvent;
+ class QProxyStyle;
+ class QRegularExpression;
++class QuickLookOverlay;
+ 
+ /**
+  * @short Represents a view for the directory content.
+@@ -1029,6 +1030,9 @@ private:
+     /// Hash table of user-preferred sort orders for each role
+     QHash<QByteArray, Qt::SortOrder> m_rolesSortOrder;
+ 
++    /// Quick Look overlay for inline image preview
++    QuickLookOverlay *m_quickLookOverlay;
++
+     // For unit tests
+     friend class TestBase;
+     friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
-index 3823967ef..9d0da03a3 100644
---- a/src/views/quicklookoverlay.cpp
+new file mode 100644
+index 000000000..3c8d5ae51
+--- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -28,12 +28,18 @@
- #include <QtConcurrent>
- 
- #ifdef HAVE_QTMULTIMEDIA
+@@ -0,0 +1,1764 @@
++/*
++ * SPDX-FileCopyrightText: 2026 Mario STJr
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "quicklookoverlay.h"
++#include "quicklookrenderer.h"
++#include "quicklookswrenderer.h"
++
++#ifdef HAVE_OPENGL
++#include "quicklookglrenderer.h"
++#include <QOffscreenSurface>
++#include <QOpenGLContext>
++#include <QOpenGLFunctions>
++#endif
++
++#include <QImageReader>
++#include <QKeyEvent>
++#include <QLabel>
++#include <QMimeDatabase>
++#include <QMouseEvent>
++#include <QPainter>
++#include <QPainterPath>
++#include <QResizeEvent>
++#include <QTimer>
++#include <QWheelEvent>
++#include <QtConcurrent>
++
++#ifdef HAVE_QTMULTIMEDIA
 +#include <QAudioBuffer>
 +#include <QAudioDecoder>
- #include <QAudioOutput>
- #include <QMediaPlayer>
- #include <QVideoFrame>
- #include <QVideoSink>
- #endif
- 
++#include <QAudioOutput>
++#include <QMediaPlayer>
++#include <QVideoFrame>
++#include <QVideoSink>
++#endif
++
 +#include <QtMath>
 +#include <complex>
 +#include <vector>
 +
- namespace
- {
- constexpr int CornerRadius = 6;
-@@ -57,6 +63,90 @@ constexpr int PdfPageRenderDelayMs = 50;
- #ifdef HAVE_QTMULTIMEDIA
- constexpr int VideoLoadTimeoutMs = 3000;
- constexpr qreal DefaultVolume = 0.5;
++namespace
++{
++constexpr int CornerRadius = 6;
++constexpr int ShadowOffset = 4;
++constexpr int TextSpacing = 12;
++constexpr int TextHeight = 30;
++constexpr int BgAlphaMax = 180;
++constexpr int ShadowAlphaMax = 80;
++constexpr int ContentPadding = 40;
++constexpr int BottomExtraSpace = 50;
++constexpr int ContentVerticalShift = 20;
++constexpr qreal ZoomMin = 1.0;
++constexpr qreal ZoomMax = 5.0;
++constexpr qreal ZoomStep = 0.15;
++constexpr qreal PdfFastDpi = 216.0;
++constexpr qreal PdfBaseDpi = 288.0;
++constexpr qreal PdfMaxDpi = 600.0;
++constexpr int PdfRerenderDelayMs = 200;
++constexpr int PdfCrossfadeDurationMs = 150;
++constexpr int PdfPageRenderDelayMs = 50;
++#ifdef HAVE_QTMULTIMEDIA
++constexpr int VideoLoadTimeoutMs = 3000;
++constexpr qreal DefaultVolume = 0.5;
 +constexpr int AudioComposeSize = 800;
++// 33⅓ RPM vinyl: degrees per frame at ~30 FPS
 +constexpr qreal VinylDegreesPerFrame = 33.0 * 360.0 / 60.0 / 30.0;
 +constexpr int AudioFrameIntervalMs = 33;
 +constexpr int FftWindowSize = 1024;
@@ -132,13 +301,48 @@ index 3823967ef..9d0da03a3 100644
 +
 +    return bars;
 +}
- #endif
- }
- 
-@@ -99,6 +189,104 @@ bool QuickLookOverlay::probeGpuAvailability()
- #endif
- }
- 
++#endif
++}
++
++#ifdef HAVE_POPPLER
++#include <poppler-qt6.h>
++#endif
++
++bool QuickLookOverlay::probeGpuAvailability()
++{
++#ifdef HAVE_OPENGL
++    QOffscreenSurface surface;
++    surface.create();
++    if (!surface.isValid()) {
++        return false;
++    }
++
++    QOpenGLContext context;
++    if (!context.create()) {
++        return false;
++    }
++
++    if (!context.makeCurrent(&surface)) {
++        return false;
++    }
++
++    const auto version = context.format().version();
++    const bool isES = context.isOpenGLES();
++    const bool sufficient = isES ? (version.first >= 2) : (version.first >= 3 || (version.first == 2 && version.second >= 1));
++
++    const char *rendererStr = reinterpret_cast<const char *>(context.functions()->glGetString(GL_RENDERER));
++    const QString renderer = rendererStr ? QString::fromLatin1(rendererStr) : QString();
++
++    const bool softwareRenderer = renderer.contains(QLatin1String("llvmpipe"), Qt::CaseInsensitive)
++        || renderer.contains(QLatin1String("softpipe"), Qt::CaseInsensitive) || renderer.contains(QLatin1String("swrast"), Qt::CaseInsensitive);
++
++    context.doneCurrent();
++    return sufficient && !softwareRenderer;
++#else
++    return false;
++#endif
++}
++
 +QImage QuickLookOverlay::generateVinylImage(int size)
 +{
 +    QImage image(size, size, QImage::Format_ARGB32_Premultiplied);
@@ -237,31 +441,555 @@ index 3823967ef..9d0da03a3 100644
 +    return image;
 +}
 +
- QuickLookOverlay::QuickLookOverlay(QWidget *parent)
-     : QWidget(parent)
-     , m_animationProgress(0.0)
-@@ -144,6 +332,7 @@ QuickLookOverlay::~QuickLookOverlay()
-     cancelPendingRenders();
- #ifdef HAVE_QTMULTIMEDIA
-     cleanupVideo();
++QuickLookOverlay::QuickLookOverlay(QWidget *parent)
++    : QWidget(parent)
++    , m_animationProgress(0.0)
++    , m_active(false)
++    , m_contentType(ContentType::Image)
++#ifdef HAVE_QTMULTIMEDIA
++    , m_videoPhase(VideoPhase::Loading)
++    , m_mediaPlayer(nullptr)
++    , m_videoSink(nullptr)
++    , m_audioOutput(nullptr)
++    , m_videoLoadTimer(nullptr)
++#endif
++{
++    setFocusPolicy(Qt::StrongFocus);
++
++    // Probe GPU once (cached across instances)
++    static const bool gpuAvailable = probeGpuAvailability();
++
++#ifdef HAVE_OPENGL
++    if (gpuAvailable) {
++        m_renderer = std::make_unique<QuickLookGLRenderer>(this);
++    } else {
++        m_renderer = std::make_unique<QuickLookSWRenderer>(this);
++    }
++#else
++    Q_UNUSED(gpuAvailable)
++    m_renderer = std::make_unique<QuickLookSWRenderer>(this);
++#endif
++
++    m_renderer->initialize();
++
++    m_hiResRenderTimer = new QTimer(this);
++    m_hiResRenderTimer->setSingleShot(true);
++    connect(m_hiResRenderTimer, &QTimer::timeout, this, &QuickLookOverlay::rerenderHiRes);
++    connect(&m_renderWatcher, &QFutureWatcher<QImage>::finished, this, &QuickLookOverlay::onHiResRenderFinished);
++    connect(&m_pageRenderWatcher, &QFutureWatcher<QImage>::finished, this, &QuickLookOverlay::onPdfPageRenderFinished);
++
++    hide();
++}
++
++QuickLookOverlay::~QuickLookOverlay()
++{
++    cancelPendingRenders();
++#ifdef HAVE_QTMULTIMEDIA
++    cleanupVideo();
 +    cleanupAudio();
- #endif
-     if (m_renderer) {
-         m_renderer->cleanup();
-@@ -187,6 +376,9 @@ bool QuickLookOverlay::isSupportedMimeType(const QString &mimeType)
-     if (mimeType.startsWith(QLatin1String("video/"))) {
-         return true;
-     }
++#endif
++    if (m_renderer) {
++        m_renderer->cleanup();
++    }
++}
++
++void QuickLookOverlay::cancelPendingRenders()
++{
++    m_renderWatcher.cancel();
++    m_renderWatcher.waitForFinished();
++    m_renderPending = false;
++
++    m_pageRenderWatcher.cancel();
++    m_pageRenderWatcher.waitForFinished();
++    m_pageRenderPending = false;
++
++    stopPdfSpinner();
++    m_hiResRenderTimer->stop();
++}
++
++bool QuickLookOverlay::isGpuAccelerated() const
++{
++    return m_renderer && m_renderer->isAccelerated();
++}
++
++bool QuickLookOverlay::isSupportedMimeType(const QString &mimeType)
++{
++    if (mimeType.startsWith(QLatin1String("image/"))) {
++        return true;
++    }
++
++    if (mimeType == QLatin1String("application/pdf")) {
++#ifdef HAVE_POPPLER
++        return true;
++#else
++        return false;
++#endif
++    }
++
++#ifdef HAVE_QTMULTIMEDIA
++    if (mimeType.startsWith(QLatin1String("video/"))) {
++        return true;
++    }
 +    if (mimeType.startsWith(QLatin1String("audio/"))) {
 +        return true;
 +    }
- #endif
- 
-     return false;
-@@ -644,6 +836,202 @@ void QuickLookOverlay::cleanupVideo()
-         m_audioOutput = nullptr;
-     }
- }
++#endif
++
++    return false;
++}
++
++void QuickLookOverlay::uploadContentToRenderer()
++{
++    if (m_contentImage.isNull() || !m_renderer) {
++        return;
++    }
++    m_renderer->uploadContent(m_contentImage, 0);
++}
++
++void QuickLookOverlay::uploadCrossfadeToRenderer(const QImage &newImage, const QImage &oldImage)
++{
++    if (!m_renderer) {
++        return;
++    }
++    m_renderer->uploadCrossfadeContent(newImage, oldImage);
++}
++
++bool QuickLookOverlay::loadImage(const QString &filePath)
++{
++    QImageReader reader(filePath);
++    reader.setAutoTransform(true);
++
++    const QSize maxSize(3840, 2160);
++    const QSize imgSize = reader.size();
++    if (imgSize.isValid() && (imgSize.width() > maxSize.width() || imgSize.height() > maxSize.height())) {
++        QSize scaled = imgSize;
++        scaled.scale(maxSize, Qt::KeepAspectRatio);
++        reader.setScaledSize(scaled);
++    }
++
++    const QImage image = reader.read();
++    if (image.isNull()) {
++        return false;
++    }
++
++    m_contentImage = image;
++    m_pixmap = QPixmap::fromImage(image);
++    m_contentType = ContentType::Image;
++    m_imageFilePath = filePath;
++    m_imageOriginalSize = imgSize.isValid() ? imgSize : image.size();
++    m_imageRenderedWidth = m_pixmap.width();
++    m_hiResLowResImage = QImage();
++    m_hiResCrossfading = false;
++    m_statusText.clear();
++
++    uploadContentToRenderer();
++    return true;
++}
++
++bool QuickLookOverlay::loadPdf(const QString &filePath)
++{
++#ifdef HAVE_POPPLER
++    m_pdfDocument = Poppler::Document::load(filePath);
++    if (!m_pdfDocument) {
++        return false;
++    }
++
++    m_pdfDocument->setRenderHint(Poppler::Document::Antialiasing);
++    m_pdfDocument->setRenderHint(Poppler::Document::TextAntialiasing);
++    m_pdfDocument->setRenderHint(Poppler::Document::TextHinting);
++    m_pdfDocument->setRenderHint(Poppler::Document::ThinLineSolid);
++
++    m_pdfBgDocument = Poppler::Document::load(filePath);
++    if (m_pdfBgDocument) {
++        m_pdfBgDocument->setRenderHint(Poppler::Document::Antialiasing);
++        m_pdfBgDocument->setRenderHint(Poppler::Document::TextAntialiasing);
++        m_pdfBgDocument->setRenderHint(Poppler::Document::TextHinting);
++        m_pdfBgDocument->setRenderHint(Poppler::Document::ThinLineSolid);
++    }
++
++    m_pdfTotalPages = m_pdfDocument->numPages();
++    m_pdfCurrentPage = 0;
++    m_pdfFilePath = filePath;
++    m_contentType = ContentType::Pdf;
++    m_imageFilePath.clear();
++    m_pdfPageCache.clear();
++    m_pdfCacheLru.clear();
++
++    renderPdfPage(0);
++
++    if (!m_contentImage.isNull()) {
++        m_hiResRenderTimer->start(PdfPageRenderDelayMs);
++    }
++
++    return !m_contentImage.isNull();
++#else
++    Q_UNUSED(filePath)
++    return false;
++#endif
++}
++
++void QuickLookOverlay::renderPdfPage(int pageIndex)
++{
++#ifdef HAVE_POPPLER
++    if (!m_pdfDocument || pageIndex < 0 || pageIndex >= m_pdfTotalPages) {
++        return;
++    }
++
++    m_pdfCurrentPage = pageIndex;
++    m_hiResLowResImage = QImage();
++    m_hiResCrossfading = false;
++
++    const QImage cached = pdfCacheLookup(pageIndex);
++    if (!cached.isNull()) {
++        m_contentImage = cached;
++        m_pixmap = QPixmap::fromImage(cached);
++        m_pdfRenderedDpi = PdfBaseDpi;
++        updatePdfStatusText();
++        uploadContentToRenderer();
++        return;
++    }
++
++    m_pdfPage = m_pdfDocument->page(pageIndex);
++    if (!m_pdfPage) {
++        return;
++    }
++
++    const QSizeF pageSize = m_pdfPage->pageSizeF();
++    const qreal dpi = computePdfDisplayDpi(pageSize);
++    const QImage image = m_pdfPage->renderToImage(dpi, dpi);
++    if (image.isNull()) {
++        return;
++    }
++
++    m_contentImage = image;
++    m_pixmap = QPixmap::fromImage(image);
++    m_pdfRenderedDpi = dpi;
++    updatePdfStatusText();
++    uploadContentToRenderer();
++#else
++    Q_UNUSED(pageIndex)
++#endif
++}
++
++qreal QuickLookOverlay::computePdfDisplayDpi(const QSizeF &pageSizePoints) const
++{
++    if (pageSizePoints.isEmpty()) {
++        return PdfBaseDpi;
++    }
++
++    // Determine available display area in logical pixels
++    int areaW = width() - 2 * ContentPadding;
++    int areaH = height() - 2 * ContentPadding - BottomExtraSpace;
++
++    // If widget isn't sized yet, try parent
++    if (areaW <= 0 || areaH <= 0) {
++        if (parentWidget()) {
++            areaW = parentWidget()->width() - 2 * ContentPadding;
++            areaH = parentWidget()->height() - 2 * ContentPadding - BottomExtraSpace;
++        }
++        if (areaW <= 0 || areaH <= 0) {
++            return PdfBaseDpi;
++        }
++    }
++
++    // Calculate how many logical pixels the page will occupy
++    QSizeF displaySize(pageSizePoints);
++    displaySize.scale(areaW, areaH, Qt::KeepAspectRatio);
++
++    // Account for device pixel ratio so texture matches physical pixels
++    const qreal dpr = devicePixelRatioF();
++
++    // DPI = physicalPixels / inches = (logicalPixels * dpr) / (points / 72)
++    const qreal dpi = (displaySize.width() * dpr) / (pageSizePoints.width() / 72.0);
++
++    return qBound(72.0, dpi, PdfMaxDpi);
++}
++
++void QuickLookOverlay::updatePdfStatusText()
++{
++    m_statusText = (m_pdfTotalPages > 1) ? QStringLiteral(" — Page %1 of %2").arg(m_pdfCurrentPage + 1).arg(m_pdfTotalPages) : QStringLiteral(" — 1 page");
++}
++
++void QuickLookOverlay::startPdfSpinner()
++{
++    if (!m_spinnerTimer) {
++        m_spinnerTimer = new QTimer(this);
++        connect(m_spinnerTimer, &QTimer::timeout, this, [this]() {
++            m_spinnerAngle += 30.0;
++            if (m_spinnerAngle >= 360.0) {
++                m_spinnerAngle -= 360.0;
++            }
++            update();
++        });
++    }
++    m_spinnerAngle = 0.0;
++    m_spinnerTimer->start(50);
++}
++
++void QuickLookOverlay::stopPdfSpinner()
++{
++    if (m_spinnerTimer) {
++        m_spinnerTimer->stop();
++    }
++    m_pdfPageLoading = false;
++    m_spinnerAngle = 0.0;
++}
++
++void QuickLookOverlay::navigatePdfPage(int direction)
++{
++#ifdef HAVE_POPPLER
++    if (m_contentType != ContentType::Pdf || m_pdfTotalPages <= 1) {
++        return;
++    }
++
++    const int newPage = m_pdfCurrentPage + direction;
++    if (newPage < 0 || newPage >= m_pdfTotalPages) {
++        return;
++    }
++
++    if (m_pageRenderPending || m_pdfPageLoading) {
++        return;
++    }
++
++    m_hiResRenderTimer->stop();
++    resetZoom();
++
++    m_pdfCurrentPage = newPage;
++    m_pdfPage = m_pdfDocument->page(newPage);
++    m_hiResLowResImage = QImage();
++    m_hiResCrossfading = false;
++    updatePdfStatusText();
++
++    // Check cache — if cached, crossfade immediately
++    const QImage cached = pdfCacheLookup(newPage);
++    if (!cached.isNull()) {
++        m_crossfadeOldImage = m_contentImage;
++        m_contentImage = cached;
++        m_pixmap = QPixmap::fromImage(cached);
++        m_pdfRenderedDpi = PdfBaseDpi;
++
++        uploadCrossfadeToRenderer(m_contentImage, m_crossfadeOldImage);
++        m_hiResCrossfade = 0.0;
++        m_hiResCrossfading = true;
++        m_hiResFadeTimer.start();
++
++        m_hiResRenderTimer->start(PdfPageRenderDelayMs);
++        prefetchAdjacentPages();
++        update();
++        return;
++    }
++
++    // Not cached — async render with loading spinner
++    m_pdfPageLoading = true;
++    startPdfSpinner();
++    renderPdfPageAsync(newPage);
++    update();
++#else
++    Q_UNUSED(direction)
++#endif
++}
++
++void QuickLookOverlay::renderPdfPageAsync(int pageIndex)
++{
++#ifdef HAVE_POPPLER
++    if (m_pageRenderPending || m_renderPending || !m_pdfBgDocument) {
++        return;
++    }
++
++    if (m_pdfPageCache.contains(pageIndex)) {
++        return;
++    }
++
++    m_pageRenderPending = true;
++    m_pageRenderTargetPage = pageIndex;
++
++    Poppler::Document *bgDoc = m_pdfBgDocument.get();
++    const qreal dpi = computePdfDisplayDpi(m_pdfPage ? m_pdfPage->pageSizeF() : QSizeF(595, 842));
++    m_pageRenderWatcher.setFuture(QtConcurrent::run([bgDoc, pageIndex, dpi]() -> QImage {
++        auto pg = bgDoc->page(pageIndex);
++        if (!pg) {
++            return {};
++        }
++        return pg->renderToImage(dpi, dpi);
++    }));
++#else
++    Q_UNUSED(pageIndex)
++#endif
++}
++
++void QuickLookOverlay::onPdfPageRenderFinished()
++{
++    m_pageRenderPending = false;
++
++    if (!m_active || m_contentType != ContentType::Pdf) {
++        return;
++    }
++
++    if (m_pageRenderWatcher.isCanceled()) {
++        return;
++    }
++
++    const QImage image = m_pageRenderWatcher.result();
++    if (image.isNull()) {
++        return;
++    }
++
++    const int targetPage = m_pageRenderTargetPage;
++
++    pdfCacheInsert(targetPage, image);
++
++    if (targetPage == m_pdfCurrentPage) {
++        if (m_pdfPageLoading) {
++            stopPdfSpinner();
++        }
++
++        m_hiResLowResImage = m_contentImage;
++        m_crossfadeOldImage = m_contentImage;
++        m_contentImage = image;
++        m_pixmap = QPixmap::fromImage(image);
++        m_pdfRenderedDpi = PdfBaseDpi;
++
++        uploadCrossfadeToRenderer(m_contentImage, m_crossfadeOldImage);
++
++        m_hiResCrossfade = 0.0;
++        m_hiResCrossfading = true;
++        m_hiResFadeTimer.start();
++
++        m_hiResRenderTimer->start(PdfPageRenderDelayMs);
++        update();
++    }
++
++    prefetchAdjacentPages();
++}
++
++void QuickLookOverlay::prefetchAdjacentPages()
++{
++#ifdef HAVE_POPPLER
++    if (m_pageRenderPending) {
++        return;
++    }
++
++    const int next = m_pdfCurrentPage + 1;
++    const int prev = m_pdfCurrentPage - 1;
++
++    if (next < m_pdfTotalPages && !m_pdfPageCache.contains(next)) {
++        renderPdfPageAsync(next);
++    } else if (prev >= 0 && !m_pdfPageCache.contains(prev)) {
++        renderPdfPageAsync(prev);
++    }
++#endif
++}
++
++#ifdef HAVE_QTMULTIMEDIA
++void QuickLookOverlay::setupVideo(const QUrl &fileUrl)
++{
++    cleanupVideo();
++
++    m_contentType = ContentType::Video;
++    m_videoPhase = VideoPhase::Loading;
++    m_contentImage = QImage();
++    m_pixmap = QPixmap();
++    m_statusText.clear();
++
++    m_audioOutput = new QAudioOutput(this);
++    m_audioOutput->setVolume(DefaultVolume);
++
++    m_mediaPlayer = new QMediaPlayer(this);
++    m_mediaPlayer->setAudioOutput(m_audioOutput);
++
++    m_videoSink = new QVideoSink(this);
++    m_mediaPlayer->setVideoOutput(m_videoSink);
++
++    m_mediaPlayer->setSource(fileUrl);
++    m_mediaPlayer->setLoops(QMediaPlayer::Infinite);
++
++    m_videoLoadTimer = new QTimer(this);
++    m_videoLoadTimer->setSingleShot(true);
++    connect(m_videoLoadTimer, &QTimer::timeout, this, [this]() {
++        if (m_videoPhase == VideoPhase::Loading) {
++            m_active = false;
++            cleanupVideo();
++            hide();
++            Q_EMIT previewClosed();
++        }
++    });
++    m_videoLoadTimer->start(VideoLoadTimeoutMs);
++
++    connect(m_mediaPlayer, &QMediaPlayer::errorOccurred, this, [this]() {
++        m_active = false;
++        cleanupVideo();
++        hide();
++        Q_EMIT previewClosed();
++    });
++
++    connect(m_videoSink, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame &frame) {
++        QVideoFrame f = frame;
++        if (!f.isValid()) {
++            return;
++        }
++
++        const QImage image = f.toImage();
++        if (image.isNull()) {
++            return;
++        }
++
++        if (m_videoPhase == VideoPhase::Loading) {
++            if (m_videoLoadTimer) {
++                m_videoLoadTimer->stop();
++                m_videoLoadTimer->deleteLater();
++                m_videoLoadTimer = nullptr;
++            }
++            m_contentImage = image;
++            m_pixmap = QPixmap::fromImage(image);
++            m_videoPhase = VideoPhase::Animating;
++            m_mediaPlayer->pause();
++
++            uploadContentToRenderer();
++
++            if (!parentWidget()) {
++                return;
++            }
++            move(0, 0);
++            resize(parentWidget()->size());
++            show();
++            raise();
++            setFocus();
++            startShowAnimation();
++            return;
++        }
++
++        if (m_videoPhase == VideoPhase::Playing) {
++            m_contentImage = image;
++            m_pixmap = QPixmap::fromImage(image);
++            uploadContentToRenderer();
++            update();
++        }
++    });
++
++    m_mediaPlayer->play();
++}
++
++void QuickLookOverlay::cleanupVideo()
++{
++    if (m_videoLoadTimer) {
++        m_videoLoadTimer->stop();
++        m_videoLoadTimer->deleteLater();
++        m_videoLoadTimer = nullptr;
++    }
++    if (m_mediaPlayer) {
++        m_mediaPlayer->stop();
++        m_mediaPlayer->deleteLater();
++        m_mediaPlayer = nullptr;
++    }
++    if (m_videoSink) {
++        m_videoSink->deleteLater();
++        m_videoSink = nullptr;
++    }
++    if (m_audioOutput) {
++        m_audioOutput->deleteLater();
++        m_audioOutput = nullptr;
++    }
++}
 +
 +void QuickLookOverlay::setupAudio(const QUrl &fileUrl)
 +{
@@ -281,7 +1009,7 @@ index 3823967ef..9d0da03a3 100644
 +        m_vinylImage = generateVinylImage(AudioComposeSize);
 +    }
 +
-+    // Compose initial static frame (non-rotated vinyl)
++    // Static vinyl frame for the open animation (overwritten on first composeAudioFrame)
 +    m_contentImage = m_vinylImage.copy();
 +    m_pixmap = QPixmap::fromImage(m_contentImage);
 +
@@ -299,10 +1027,18 @@ index 3823967ef..9d0da03a3 100644
 +        if (m_contentType != ContentType::Audio) {
 +            return;
 +        }
-+        const qint64 dur = m_mediaPlayer->duration() / 1000;
-+        const qint64 cur = pos / 1000;
-+        m_statusText =
-+            QStringLiteral(" — %1:%2 / %3:%4").arg(cur / 60).arg(cur % 60, 2, 10, QLatin1Char('0')).arg(dur / 60).arg(dur % 60, 2, 10, QLatin1Char('0'));
++        const qint64 durSec = m_mediaPlayer->duration() / 1000;
++        const qint64 curSec = pos / 1000;
++        auto formatTime = [](qint64 totalSec) -> QString {
++            const qint64 h = totalSec / 3600;
++            const qint64 m = (totalSec % 3600) / 60;
++            const qint64 s = totalSec % 60;
++            if (h > 0) {
++                return QStringLiteral("%1:%2:%3").arg(h).arg(m, 2, 10, QLatin1Char('0')).arg(s, 2, 10, QLatin1Char('0'));
++            }
++            return QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
++        };
++        m_statusText = QStringLiteral(" — %1 / %2").arg(formatTime(curSec), formatTime(durSec));
 +    });
 +
 +    // Set up audio decoder for spectrum data
@@ -334,6 +1070,11 @@ index 3823967ef..9d0da03a3 100644
 +        m_audioDecodingDone = true;
 +    });
 +
++    connect(m_audioDecoder, qOverload<QAudioDecoder::Error>(&QAudioDecoder::error), this, [this]() {
++        m_audioDecodingDone = true;
++    });
++
++    m_audioSamples.reserve(MaxAudioDecodeSamples);
 +    m_audioDecoder->start();
 +
 +    // Show and animate
@@ -367,19 +1108,18 @@ index 3823967ef..9d0da03a3 100644
 +        m_audioDecoder->deleteLater();
 +        m_audioDecoder = nullptr;
 +    }
-+    if (m_contentType == ContentType::Audio) {
-+        if (m_mediaPlayer) {
-+            m_mediaPlayer->stop();
-+            m_mediaPlayer->deleteLater();
-+            m_mediaPlayer = nullptr;
-+        }
-+        if (m_audioOutput) {
-+            m_audioOutput->deleteLater();
-+            m_audioOutput = nullptr;
-+        }
++    if (m_mediaPlayer) {
++        m_mediaPlayer->stop();
++        m_mediaPlayer->deleteLater();
++        m_mediaPlayer = nullptr;
++    }
++    if (m_audioOutput) {
++        m_audioOutput->deleteLater();
++        m_audioOutput = nullptr;
 +    }
 +    m_audioSamples.clear();
 +    m_audioSamples.squeeze();
++    m_audioFrame = QImage();
 +    m_smoothedSpectrum.clear();
 +    m_audioDecodingDone = false;
 +}
@@ -391,10 +1131,12 @@ index 3823967ef..9d0da03a3 100644
 +    }
 +
 +    const int sz = AudioComposeSize;
-+    QImage frame(sz, sz, QImage::Format_ARGB32_Premultiplied);
-+    frame.fill(Qt::transparent);
++    if (m_audioFrame.isNull() || m_audioFrame.width() != sz) {
++        m_audioFrame = QImage(sz, sz, QImage::Format_ARGB32_Premultiplied);
++    }
++    m_audioFrame.fill(Qt::transparent);
 +
-+    QPainter painter(&frame);
++    QPainter painter(&m_audioFrame);
 +    painter.setRenderHint(QPainter::Antialiasing);
 +    painter.setRenderHint(QPainter::SmoothPixmapTransform);
 +
@@ -405,7 +1147,6 @@ index 3823967ef..9d0da03a3 100644
 +    painter.translate(-center);
 +    painter.drawImage(QRect(0, 0, sz, sz), m_vinylImage);
 +
-+    // Draw spectrum in center
 +    if (!m_audioSamples.isEmpty() && m_mediaPlayer && m_audioPhase == AudioPhase::Playing) {
 +        painter.resetTransform();
 +        painter.translate(center);
@@ -453,39 +1194,143 @@ index 3823967ef..9d0da03a3 100644
 +
 +    painter.end();
 +
-+    m_contentImage = frame;
-+    m_pixmap = QPixmap::fromImage(frame);
++    m_contentImage = m_audioFrame;
++    m_pixmap = QPixmap::fromImage(m_audioFrame);
 +    uploadContentToRenderer();
 +    update();
 +}
- #endif
- 
- void QuickLookOverlay::pdfCacheInsert(int pageIndex, const QImage &image)
-@@ -699,6 +1087,7 @@ bool QuickLookOverlay::showPreview(const QUrl &fileUrl)
- #endif
- #ifdef HAVE_QTMULTIMEDIA
-         cleanupVideo();
++#endif
++
++void QuickLookOverlay::pdfCacheInsert(int pageIndex, const QImage &image)
++{
++    if (m_pdfPageCache.contains(pageIndex)) {
++        m_pdfCacheLru.removeOne(pageIndex);
++        m_pdfCacheLru.prepend(pageIndex);
++        m_pdfPageCache[pageIndex] = image;
++        return;
++    }
++
++    while (m_pdfCacheLru.size() >= PdfCacheMaxPages) {
++        const int evicted = m_pdfCacheLru.takeLast();
++        m_pdfPageCache.remove(evicted);
++    }
++
++    m_pdfPageCache.insert(pageIndex, image);
++    m_pdfCacheLru.prepend(pageIndex);
++}
++
++QImage QuickLookOverlay::pdfCacheLookup(int pageIndex)
++{
++    if (!m_pdfPageCache.contains(pageIndex)) {
++        return {};
++    }
++
++    m_pdfCacheLru.removeOne(pageIndex);
++    m_pdfCacheLru.prepend(pageIndex);
++
++    return m_pdfPageCache.value(pageIndex);
++}
++
++bool QuickLookOverlay::showPreview(const QUrl &fileUrl)
++{
++    if (!fileUrl.isLocalFile()) {
++        return false;
++    }
++
++    // Cancel any in-flight async renders before switching content
++    cancelPendingRenders();
++
++    // If a hide animation was in progress, run its cleanup now
++    if (m_animating && !m_animForward) {
++        m_animating = false;
++        m_contentImage = QImage();
++        m_pixmap = QPixmap();
++#ifdef HAVE_POPPLER
++        m_pdfPage.reset();
++        m_pdfDocument.reset();
++        m_pdfBgDocument.reset();
++        m_pdfPageCache.clear();
++        m_pdfCacheLru.clear();
++#endif
++#ifdef HAVE_QTMULTIMEDIA
++        cleanupVideo();
 +        cleanupAudio();
- #endif
-     } else {
-         m_animating = false;
-@@ -722,6 +1111,12 @@ bool QuickLookOverlay::showPreview(const QUrl &fileUrl)
-         resetZoom();
-         setupVideo(fileUrl);
-         return true;
++#endif
++    } else {
++        m_animating = false;
++    }
++
++    const QString filePath = fileUrl.toLocalFile();
++    QMimeDatabase mimeDb;
++    const QString mimeType = mimeDb.mimeTypeForFile(filePath).name();
++
++    bool loaded = false;
++
++    if (mimeType.startsWith(QLatin1String("image/"))) {
++        loaded = loadImage(filePath);
++    } else if (mimeType == QLatin1String("application/pdf")) {
++        loaded = loadPdf(filePath);
++    }
++#ifdef HAVE_QTMULTIMEDIA
++    else if (mimeType.startsWith(QLatin1String("video/"))) {
++        m_currentUrl = fileUrl;
++        m_active = true;
++        resetZoom();
++        setupVideo(fileUrl);
++        return true;
 +    } else if (mimeType.startsWith(QLatin1String("audio/"))) {
 +        m_currentUrl = fileUrl;
 +        m_active = true;
 +        resetZoom();
 +        setupAudio(fileUrl);
 +        return true;
-     }
- #endif
- 
-@@ -769,6 +1164,15 @@ void QuickLookOverlay::hidePreview()
-         }
-         m_videoPhase = VideoPhase::Closing;
-     }
++    }
++#endif
++
++    if (!loaded) {
++        return false;
++    }
++
++    m_currentUrl = fileUrl;
++    m_active = true;
++    resetZoom();
++
++    if (!parentWidget()) {
++        return false;
++    }
++    move(0, 0);
++    resize(parentWidget()->size());
++
++    // Resize GL widget if using GPU renderer
++    if (m_renderer) {
++        m_renderer->resize(width(), height());
++    }
++
++    show();
++    raise();
++    setFocus();
++
++    // Re-upload content after show() so that the GL context is guaranteed
++    // to be initialised (initializeGL runs on first show).
++    uploadContentToRenderer();
++
++    startShowAnimation();
++    return true;
++}
++
++void QuickLookOverlay::hidePreview()
++{
++    if (!m_active) {
++        return;
++    }
++
++#ifdef HAVE_QTMULTIMEDIA
++    if (m_contentType == ContentType::Video) {
++        if (m_mediaPlayer) {
++            m_mediaPlayer->pause();
++        }
++        m_videoPhase = VideoPhase::Closing;
++    }
 +    if (m_contentType == ContentType::Audio) {
 +        if (m_mediaPlayer) {
 +            m_mediaPlayer->pause();
@@ -495,13 +1340,53 @@ index 3823967ef..9d0da03a3 100644
 +        }
 +        m_audioPhase = AudioPhase::Closing;
 +    }
- #endif
- 
-     startHideAnimation();
-@@ -816,6 +1220,25 @@ void QuickLookOverlay::onAnimationFinished()
-             m_videoPhase = VideoPhase::Playing;
-             m_mediaPlayer->play();
-         }
++#endif
++
++    startHideAnimation();
++}
++
++bool QuickLookOverlay::isPreviewActive() const
++{
++    return m_active;
++}
++
++qreal QuickLookOverlay::animationProgress() const
++{
++    return m_animationProgress;
++}
++
++void QuickLookOverlay::setAnimationProgress(qreal progress)
++{
++    m_animationProgress = progress;
++    update();
++}
++
++void QuickLookOverlay::advanceAnimation()
++{
++    if (!m_animating) {
++        return;
++    }
++
++    const qreal elapsed = static_cast<qreal>(m_animTimer.elapsed());
++    const qreal duration = qMax(1.0, static_cast<qreal>(m_animDuration));
++    const qreal t = qBound(0.0, elapsed / duration, 1.0);
++    const qreal easedT = m_easingCurve.valueForProgress(t);
++    m_animationProgress = m_animStartValue + (m_animEndValue - m_animStartValue) * easedT;
++
++    if (t >= 1.0) {
++        m_animating = false;
++        onAnimationFinished();
++    }
++}
++
++void QuickLookOverlay::onAnimationFinished()
++{
++    if (m_animForward) {
++#ifdef HAVE_QTMULTIMEDIA
++        if (m_contentType == ContentType::Video && m_videoPhase == VideoPhase::Animating && m_mediaPlayer) {
++            m_videoPhase = VideoPhase::Playing;
++            m_mediaPlayer->play();
++        }
 +        if (m_contentType == ContentType::Audio && m_audioPhase == AudioPhase::Animating && m_mediaPlayer) {
 +            m_audioPhase = AudioPhase::Playing;
 +            m_mediaPlayer->play();
@@ -521,85 +1406,744 @@ index 3823967ef..9d0da03a3 100644
 +            }
 +            m_vinylTimer->start(AudioFrameIntervalMs);
 +        }
- #endif
-     } else {
-         m_active = false;
-@@ -834,6 +1257,7 @@ void QuickLookOverlay::onAnimationFinished()
- #endif
- #ifdef HAVE_QTMULTIMEDIA
-         cleanupVideo();
++#endif
++    } else {
++        m_active = false;
++
++        // Cancel async renders before destroying documents they reference
++        cancelPendingRenders();
++
++        m_contentImage = QImage();
++        m_pixmap = QPixmap();
++#ifdef HAVE_POPPLER
++        m_pdfPage.reset();
++        m_pdfDocument.reset();
++        m_pdfBgDocument.reset();
++        m_pdfPageCache.clear();
++        m_pdfCacheLru.clear();
++#endif
++#ifdef HAVE_QTMULTIMEDIA
++        cleanupVideo();
 +        cleanupAudio();
- #endif
-         hide();
-         Q_EMIT previewClosed();
-@@ -1075,6 +1499,7 @@ void QuickLookOverlay::paintEvent(QPaintEvent *event)
-     state.labelText = m_currentUrl.fileName() + m_statusText;
-     state.hiResCrossfade = m_hiResCrossfading ? m_hiResCrossfade : 1.0;
-     state.isVideoPlaying = false;
++#endif
++        hide();
++        Q_EMIT previewClosed();
++    }
++}
++
++void QuickLookOverlay::advanceZoomAnimation()
++{
++    if (!m_zoomAnimating) {
++        return;
++    }
++
++    const qreal elapsed = static_cast<qreal>(m_zoomAnimTimer.elapsed());
++    const qreal duration = qMax(1.0, static_cast<qreal>(m_zoomAnimDuration));
++    const qreal t = qBound(0.0, elapsed / duration, 1.0);
++    const qreal easedT = m_easingCurve.valueForProgress(t);
++
++    m_zoomFactor = m_zoomAnimStartFactor + (1.0 - m_zoomAnimStartFactor) * easedT;
++    m_panOffset = m_zoomAnimStartPan * (1.0 - easedT);
++
++    if (t >= 1.0) {
++        m_zoomAnimating = false;
++        m_zoomFactor = 1.0;
++        m_panOffset = QPointF(0, 0);
++        setCursor(Qt::ArrowCursor);
++        scheduleHiResRerender();
++    }
++}
++
++void QuickLookOverlay::animateZoomReset()
++{
++    m_zoomAnimStartFactor = m_zoomFactor;
++    m_zoomAnimStartPan = m_panOffset;
++    m_zoomAnimating = true;
++    m_zoomAnimTimer.start();
++    m_dragging = false;
++    update();
++}
++
++void QuickLookOverlay::scheduleHiResRerender()
++{
++    if (m_contentType == ContentType::Pdf) {
++#ifdef HAVE_POPPLER
++        if (!m_pdfPage) {
++            return;
++        }
++        const qreal baseDpi = computePdfDisplayDpi(m_pdfPage->pageSizeF());
++        const qreal targetDpi = qBound(baseDpi, baseDpi * m_zoomFactor, PdfMaxDpi);
++        const qreal ratio = targetDpi / m_pdfRenderedDpi;
++        if (ratio > 0.85 && ratio < 1.15) {
++            return;
++        }
++        m_hiResRenderTimer->start(PdfRerenderDelayMs);
++#endif
++    } else if (m_contentType == ContentType::Image && !m_imageFilePath.isEmpty()) {
++        if (!m_imageOriginalSize.isValid() || m_pixmap.isNull()) {
++            return;
++        }
++
++        const QRectF base = baseContentRect();
++        const int targetWidth = qBound(static_cast<int>(base.width()), static_cast<int>(base.width() * m_zoomFactor), m_imageOriginalSize.width());
++        const qreal ratio = static_cast<qreal>(targetWidth) / m_imageRenderedWidth;
++        if (ratio > 0.85 && ratio < 1.15) {
++            return;
++        }
++
++        m_hiResRenderTimer->start(PdfRerenderDelayMs);
++    }
++}
++
++void QuickLookOverlay::rerenderHiRes()
++{
++    if (m_renderPending || m_pageRenderPending) {
++        m_hiResRenderTimer->start(PdfRerenderDelayMs);
++        return;
++    }
++
++    if (m_contentType == ContentType::Pdf) {
++#ifdef HAVE_POPPLER
++        if (!m_pdfPage) {
++            return;
++        }
++
++        const qreal baseDpi = computePdfDisplayDpi(m_pdfPage->pageSizeF());
++
++        if (m_pdfRenderedDpi < baseDpi && qFuzzyCompare(m_zoomFactor, 1.0)) {
++            renderPdfPageAsync(m_pdfCurrentPage);
++            return;
++        }
++
++        const qreal targetDpi = qBound(baseDpi, baseDpi * m_zoomFactor, PdfMaxDpi);
++        const qreal ratio = targetDpi / m_pdfRenderedDpi;
++        if (ratio > 0.85 && ratio < 1.15) {
++            return;
++        }
++
++        m_renderTargetDpi = targetDpi;
++        m_renderPending = true;
++        m_renderPageIndex = m_pdfCurrentPage;
++
++        const QString filePath = m_pdfFilePath;
++        const qreal dpi = targetDpi;
++        const int pageIndex = m_pdfCurrentPage;
++
++        if (m_pdfBgDocument) {
++            Poppler::Document *bgDoc = m_pdfBgDocument.get();
++            m_renderWatcher.setFuture(QtConcurrent::run([bgDoc, dpi, pageIndex]() -> QImage {
++                auto pg = bgDoc->page(pageIndex);
++                if (!pg) {
++                    return {};
++                }
++                return pg->renderToImage(dpi, dpi);
++            }));
++        } else {
++            m_renderWatcher.setFuture(QtConcurrent::run([filePath, dpi, pageIndex]() -> QImage {
++                auto doc = Poppler::Document::load(filePath);
++                if (!doc) {
++                    return {};
++                }
++                doc->setRenderHint(Poppler::Document::Antialiasing);
++                doc->setRenderHint(Poppler::Document::TextAntialiasing);
++                doc->setRenderHint(Poppler::Document::TextHinting);
++                doc->setRenderHint(Poppler::Document::ThinLineSolid);
++                auto pg = doc->page(pageIndex);
++                if (!pg) {
++                    return {};
++                }
++                return pg->renderToImage(dpi, dpi);
++            }));
++        }
++#endif
++    } else if (m_contentType == ContentType::Image && !m_imageFilePath.isEmpty()) {
++        const QRectF base = baseContentRect();
++        const int targetWidth = qBound(static_cast<int>(base.width()), static_cast<int>(base.width() * m_zoomFactor), m_imageOriginalSize.width());
++        const qreal ratio = static_cast<qreal>(targetWidth) / m_imageRenderedWidth;
++        if (ratio > 0.85 && ratio < 1.15) {
++            return;
++        }
++
++        m_renderPending = true;
++        m_renderImageFilePath = m_imageFilePath;
++
++        const QString filePath = m_imageFilePath;
++        const QSize origSize = m_imageOriginalSize;
++        if (origSize.width() <= 0 || origSize.height() <= 0) {
++            m_renderPending = false;
++            return;
++        }
++        const int tw = targetWidth;
++        m_renderWatcher.setFuture(QtConcurrent::run([filePath, origSize, tw]() -> QImage {
++            QImageReader reader(filePath);
++            reader.setAutoTransform(true);
++
++            QSize scaledSize = origSize;
++            scaledSize.scale(tw, tw * origSize.height() / origSize.width(), Qt::KeepAspectRatio);
++            reader.setScaledSize(scaledSize);
++
++            return reader.read();
++        }));
++    }
++}
++
++void QuickLookOverlay::onHiResRenderFinished()
++{
++    m_renderPending = false;
++
++    if (!m_active) {
++        return;
++    }
++
++    if (m_renderWatcher.isCanceled()) {
++        return;
++    }
++
++    if (m_contentType == ContentType::Pdf && m_renderPageIndex != m_pdfCurrentPage) {
++        return;
++    }
++
++    if (m_contentType == ContentType::Image && m_renderImageFilePath != m_imageFilePath) {
++        return;
++    }
++
++    const QImage image = m_renderWatcher.result();
++    if (image.isNull()) {
++        return;
++    }
++
++    m_hiResLowResImage = m_contentImage;
++    m_crossfadeOldImage = m_contentImage;
++    m_contentImage = image;
++    m_pixmap = QPixmap::fromImage(image);
++
++    if (m_contentType == ContentType::Pdf) {
++        m_pdfRenderedDpi = m_renderTargetDpi;
++    } else if (m_contentType == ContentType::Image) {
++        m_imageRenderedWidth = m_pixmap.width();
++    }
++
++    uploadCrossfadeToRenderer(m_contentImage, m_crossfadeOldImage);
++
++    m_hiResCrossfade = 0.0;
++    m_hiResCrossfading = true;
++    m_hiResFadeTimer.start();
++    update();
++}
++
++void QuickLookOverlay::paintEvent(QPaintEvent *event)
++{
++    Q_UNUSED(event)
++
++    advanceAnimation();
++    advanceZoomAnimation();
++
++    // Update crossfade progress
++    if (m_hiResCrossfading) {
++        const qreal elapsed = static_cast<qreal>(m_hiResFadeTimer.elapsed());
++        m_hiResCrossfade = qBound(0.0, elapsed / PdfCrossfadeDurationMs, 1.0);
++        if (m_hiResCrossfade >= 1.0) {
++            m_hiResCrossfading = false;
++            m_hiResLowResImage = QImage();
++            m_crossfadeOldImage = QImage();
++        }
++    }
++
++    if (m_contentImage.isNull()) {
++        if (m_animating || m_zoomAnimating) {
++            update();
++        }
++        return;
++    }
++
++    // Build render state
++    QuickLookRenderer::RenderState state;
++    state.animationProgress = m_animationProgress;
++    state.zoomFactor = m_zoomFactor;
++    state.panOffset = m_panOffset;
++    state.baseContentRect = baseContentRect();
++    state.widgetSize = size();
++    state.labelText = m_currentUrl.fileName() + m_statusText;
++    state.hiResCrossfade = m_hiResCrossfading ? m_hiResCrossfade : 1.0;
++    state.isVideoPlaying = false;
 +    state.isAudioContent = (m_contentType == ContentType::Audio);
- 
- #ifdef HAVE_QTMULTIMEDIA
-     state.isVideoPlaying = (m_contentType == ContentType::Video && m_videoPhase == VideoPhase::Playing);
-@@ -1187,7 +1612,7 @@ void QuickLookOverlay::mouseReleaseEvent(QMouseEvent *event)
- 
- void QuickLookOverlay::wheelEvent(QWheelEvent *event)
- {
--    if (!m_active || m_animating || m_zoomAnimating) {
++
++#ifdef HAVE_QTMULTIMEDIA
++    state.isVideoPlaying = (m_contentType == ContentType::Video && m_videoPhase == VideoPhase::Playing);
++#endif
++
++    // Compute drawRect with scale animation
++    const QPointF center = state.baseContentRect.center();
++    const qreal scale = state.isVideoPlaying ? 1.0 : (0.3 + 0.7 * m_animationProgress);
++    const qreal w = state.baseContentRect.width() * scale * m_zoomFactor;
++    const qreal h = state.baseContentRect.height() * scale * m_zoomFactor;
++    const qreal cx = center.x() + m_panOffset.x();
++    const qreal cy = center.y() + m_panOffset.y();
++    state.drawRect = QRectF(cx - w / 2.0, cy - h / 2.0, w, h);
++    state.anchorRect = QRectF(center.x() - w / 2.0, center.y() - h / 2.0, w, h);
++    state.shadowRect = state.drawRect.adjusted(ShadowOffset * m_animationProgress,
++                                               ShadowOffset * m_animationProgress,
++                                               ShadowOffset * m_animationProgress,
++                                               ShadowOffset * m_animationProgress);
++
++    // PDF arrows — anchored to baseContentRect so they don't move with drag
++    if (m_contentType == ContentType::Pdf && m_pdfTotalPages > 1 && m_animationProgress > 0.5) {
++        const int arrowSize = 36;
++        const int arrowMargin = 16;
++        const int arrowX = state.anchorRect.right() + arrowMargin;
++        const int centerY = state.anchorRect.center().y();
++
++        state.showPdfArrows = true;
++        state.pdfArrowUpRect = QRect(arrowX, centerY - arrowSize - 4, arrowSize, arrowSize);
++        state.pdfArrowDownRect = QRect(arrowX, centerY + 4, arrowSize, arrowSize);
++        state.canGoUp = m_pdfCurrentPage > 0 && !m_pdfPageLoading;
++        state.canGoDown = m_pdfCurrentPage < m_pdfTotalPages - 1 && !m_pdfPageLoading;
++        state.pdfPageLoading = m_pdfPageLoading;
++        state.spinnerAngle = m_spinnerAngle;
++
++        m_pdfArrowUpRect = state.pdfArrowUpRect;
++        m_pdfArrowDownRect = state.pdfArrowDownRect;
++    } else {
++        state.showPdfArrows = false;
++        m_pdfArrowUpRect = QRect();
++        m_pdfArrowDownRect = QRect();
++    }
++
++    m_renderer->render(state);
++
++    if (m_animating || m_zoomAnimating || m_hiResCrossfading) {
++        update();
++    }
++}
++
++void QuickLookOverlay::mouseDoubleClickEvent(QMouseEvent *event)
++{
++    Q_UNUSED(event)
++    hidePreview();
++}
++
++void QuickLookOverlay::mousePressEvent(QMouseEvent *event)
++{
++    if (event->button() == Qt::LeftButton && m_contentType == ContentType::Pdf && m_pdfTotalPages > 1 && !m_pdfPageLoading) {
++        const QPoint pos = event->pos();
++        if (m_pdfArrowUpRect.contains(pos) && m_pdfCurrentPage > 0) {
++            navigatePdfPage(-1);
++            event->accept();
++            return;
++        }
++        if (m_pdfArrowDownRect.contains(pos) && m_pdfCurrentPage < m_pdfTotalPages - 1) {
++            navigatePdfPage(1);
++            event->accept();
++            return;
++        }
++    }
++
++    if (event->button() == Qt::RightButton && m_zoomFactor > ZoomMin) {
++        animateZoomReset();
++        event->accept();
++        return;
++    }
++    if (event->button() == Qt::LeftButton && m_zoomFactor > ZoomMin) {
++        m_dragging = true;
++        m_lastMousePos = event->position();
++        setCursor(Qt::ClosedHandCursor);
++        event->accept();
++        return;
++    }
++    QWidget::mousePressEvent(event);
++}
++
++void QuickLookOverlay::mouseMoveEvent(QMouseEvent *event)
++{
++    if (m_dragging) {
++        const QPointF delta = event->position() - m_lastMousePos;
++        m_panOffset += QPointF(delta.x(), -delta.y());
++        m_lastMousePos = event->position();
++        update();
++        event->accept();
++        return;
++    }
++    QWidget::mouseMoveEvent(event);
++}
++
++void QuickLookOverlay::mouseReleaseEvent(QMouseEvent *event)
++{
++    if (event->button() == Qt::LeftButton && m_dragging) {
++        m_dragging = false;
++        setCursor(m_zoomFactor > ZoomMin ? Qt::OpenHandCursor : Qt::ArrowCursor);
++        event->accept();
++        return;
++    }
++    QWidget::mouseReleaseEvent(event);
++}
++
++void QuickLookOverlay::wheelEvent(QWheelEvent *event)
++{
 +    if (!m_active || m_animating || m_zoomAnimating || m_contentType == ContentType::Audio) {
-         event->ignore();
-         return;
-     }
++        event->ignore();
++        return;
++    }
++
++    const QRect contentArea = scaledContentRect();
++    const QPointF cursorPos = event->position();
++    if (!contentArea.contains(cursorPos.toPoint())) {
++        event->accept();
++        return;
++    }
++
++    const qreal oldZoom = m_zoomFactor;
++    const qreal delta = event->angleDelta().y() > 0 ? ZoomStep : -ZoomStep;
++    m_zoomFactor = qBound(ZoomMin, m_zoomFactor + delta * m_zoomFactor, ZoomMax);
++
++    if (qFuzzyCompare(m_zoomFactor, oldZoom)) {
++        event->accept();
++        return;
++    }
++
++    const QRectF base = baseContentRect();
++    const QPointF baseCenter = base.center();
++    const qreal ratio = m_zoomFactor / oldZoom;
++    m_panOffset = (1.0 - ratio) * (cursorPos - baseCenter) + ratio * m_panOffset;
++
++    if (qFuzzyCompare(m_zoomFactor, ZoomMin)) {
++        m_panOffset = QPointF(0, 0);
++        setCursor(Qt::ArrowCursor);
++    } else {
++        setCursor(Qt::OpenHandCursor);
++    }
++
++    scheduleHiResRerender();
++
++    update();
++    event->accept();
++}
++
++void QuickLookOverlay::keyPressEvent(QKeyEvent *event)
++{
++    if (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Space) {
++        hidePreview();
++        event->accept();
++        return;
++    }
++
++    if (m_contentType == ContentType::Pdf && m_pdfTotalPages > 1) {
++        if (event->key() == Qt::Key_Up || event->key() == Qt::Key_PageUp) {
++            navigatePdfPage(-1);
++            event->accept();
++            return;
++        }
++        if (event->key() == Qt::Key_Down || event->key() == Qt::Key_PageDown) {
++            navigatePdfPage(1);
++            event->accept();
++            return;
++        }
++    }
++
++    QWidget::keyPressEvent(event);
++}
++
++void QuickLookOverlay::resizeEvent(QResizeEvent *event)
++{
++    QWidget::resizeEvent(event);
++    if (m_renderer) {
++        m_renderer->resize(width(), height());
++    }
++    update();
++}
++
++void QuickLookOverlay::startShowAnimation()
++{
++    m_animStartValue = m_animationProgress;
++    m_animEndValue = 1.0;
++    m_animForward = true;
++    m_animating = true;
++    m_animTimer.start();
++    update();
++}
++
++void QuickLookOverlay::startHideAnimation()
++{
++    m_animStartValue = m_animationProgress;
++    m_animEndValue = 0.0;
++    m_animForward = false;
++    m_animating = true;
++    m_animTimer.start();
++    update();
++}
++
++void QuickLookOverlay::resetZoom()
++{
++    m_zoomFactor = 1.0;
++    m_panOffset = QPointF(0, 0);
++    m_dragging = false;
++    setCursor(Qt::ArrowCursor);
++}
++
++QRectF QuickLookOverlay::baseContentRect() const
++{
++    const int maxW = width() - 2 * ContentPadding;
++    const int maxH = height() - 2 * ContentPadding - BottomExtraSpace;
++
++    QSize contentSize;
++    if (!m_pixmap.isNull()) {
++        contentSize = m_pixmap.size();
++    } else if (!m_contentImage.isNull()) {
++        contentSize = m_contentImage.size();
++    } else {
++        return {};
++    }
++
++    contentSize.scale(maxW, maxH, Qt::KeepAspectRatio);
++
++    const qreal x = (width() - contentSize.width()) / 2.0;
++    const qreal y = (height() - contentSize.height()) / 2.0 - ContentVerticalShift;
++
++    return {x, y, static_cast<qreal>(contentSize.width()), static_cast<qreal>(contentSize.height())};
++}
++
++QRect QuickLookOverlay::scaledContentRect() const
++{
++    const QRectF base = baseContentRect();
++    if (base.isEmpty()) {
++        return {};
++    }
++
++    const qreal w = base.width() * m_zoomFactor;
++    const qreal h = base.height() * m_zoomFactor;
++    const qreal cx = base.center().x() + m_panOffset.x();
++    const qreal cy = base.center().y() + m_panOffset.y();
++
++    return QRectF(cx - w / 2.0, cy - h / 2.0, w, h).toRect();
++}
 diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
-index e72c86874..70776031c 100644
---- a/src/views/quicklookoverlay.h
+new file mode 100644
+index 000000000..ff51c4887
+--- /dev/null
 +++ b/src/views/quicklookoverlay.h
-@@ -31,6 +31,7 @@ class Page;
- #endif
- 
- #ifdef HAVE_QTMULTIMEDIA
+@@ -0,0 +1,239 @@
++/*
++ * SPDX-FileCopyrightText: 2026 Mario STJr
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef QUICKLOOKOVERLAY_H
++#define QUICKLOOKOVERLAY_H
++
++#include <QEasingCurve>
++#include <QElapsedTimer>
++#include <QPointF>
++#include <QUrl>
++#include <QWidget>
++
++#include <QFutureWatcher>
++#include <QHash>
++#include <QPixmap>
++#include <memory>
++
++class QLabel;
++class QTimer;
++class QuickLookRenderer;
++
++#ifdef HAVE_POPPLER
++namespace Poppler
++{
++class Document;
++class Page;
++}
++#endif
++
++#ifdef HAVE_QTMULTIMEDIA
 +class QAudioDecoder;
- class QMediaPlayer;
- class QVideoSink;
- class QAudioOutput;
-@@ -74,6 +75,7 @@ private:
-         Image,
-         Pdf,
-         Video,
++class QMediaPlayer;
++class QVideoSink;
++class QAudioOutput;
++#endif
++
++class QuickLookOverlay : public QWidget
++{
++    Q_OBJECT
++    Q_PROPERTY(qreal animationProgress READ animationProgress WRITE setAnimationProgress)
++
++public:
++    explicit QuickLookOverlay(QWidget *parent = nullptr);
++    ~QuickLookOverlay() override;
++
++    bool showPreview(const QUrl &fileUrl);
++    void hidePreview();
++    bool isPreviewActive() const;
++    static bool isSupportedMimeType(const QString &mimeType);
++
++    qreal animationProgress() const;
++    void setAnimationProgress(qreal progress);
++
++    // Whether GPU-accelerated rendering is active
++    bool isGpuAccelerated() const;
++
++Q_SIGNALS:
++    void previewClosed();
++
++protected:
++    void paintEvent(QPaintEvent *event) override;
++    void mouseDoubleClickEvent(QMouseEvent *event) override;
++    void mousePressEvent(QMouseEvent *event) override;
++    void mouseMoveEvent(QMouseEvent *event) override;
++    void mouseReleaseEvent(QMouseEvent *event) override;
++    void wheelEvent(QWheelEvent *event) override;
++    void keyPressEvent(QKeyEvent *event) override;
++    void resizeEvent(QResizeEvent *event) override;
++
++private:
++    enum class ContentType {
++        Image,
++        Pdf,
++        Video,
 +        Audio,
-     };
- 
- #ifdef HAVE_QTMULTIMEDIA
-@@ -83,6 +85,12 @@ private:
-         Playing,
-         Closing,
-     };
++    };
++
++#ifdef HAVE_QTMULTIMEDIA
++    enum class VideoPhase {
++        Loading,
++        Animating,
++        Playing,
++        Closing,
++    };
 +
 +    enum class AudioPhase {
 +        Animating,
 +        Playing,
 +        Closing,
 +    };
- #endif
- 
-     static bool probeGpuAvailability();
-@@ -106,8 +114,13 @@ private:
- #ifdef HAVE_QTMULTIMEDIA
-     void setupVideo(const QUrl &fileUrl);
-     void cleanupVideo();
++#endif
++
++    static bool probeGpuAvailability();
++
++    void startShowAnimation();
++    void startHideAnimation();
++    QRect scaledContentRect() const;
++
++    bool loadImage(const QString &filePath);
++    bool loadPdf(const QString &filePath);
++    void navigatePdfPage(int direction);
++    void renderPdfPage(int pageIndex);
++    void renderPdfPageAsync(int pageIndex);
++    void onPdfPageRenderFinished();
++    void prefetchAdjacentPages();
++    void updatePdfStatusText();
++    void startPdfSpinner();
++    void stopPdfSpinner();
++    qreal computePdfDisplayDpi(const QSizeF &pageSizePoints) const;
++
++#ifdef HAVE_QTMULTIMEDIA
++    void setupVideo(const QUrl &fileUrl);
++    void cleanupVideo();
 +    void setupAudio(const QUrl &fileUrl);
 +    void cleanupAudio();
 +    void composeAudioFrame();
- #endif
- 
++#endif
++
 +    static QImage generateVinylImage(int size);
 +
-     void advanceAnimation();
-     void advanceZoomAnimation();
-     void onAnimationFinished();
-@@ -208,6 +221,17 @@ private:
-     QVideoSink *m_videoSink;
-     QAudioOutput *m_audioOutput;
-     QTimer *m_videoLoadTimer;
++    void advanceAnimation();
++    void advanceZoomAnimation();
++    void onAnimationFinished();
++    QRectF baseContentRect() const;
++    void resetZoom();
++    void animateZoomReset();
++    void cancelPendingRenders();
++    void scheduleHiResRerender();
++    void rerenderHiRes();
++    void onHiResRenderFinished();
++
++    // Upload current content to the GPU/SW renderer
++    void uploadContentToRenderer();
++    void uploadCrossfadeToRenderer(const QImage &newImage, const QImage &oldImage);
++
++    // Renderer (GPU or CPU fallback)
++    std::unique_ptr<QuickLookRenderer> m_renderer;
++
++    QImage m_contentImage;
++    QImage m_crossfadeOldImage;
++    QPixmap m_pixmap; // kept for SW path compatibility and size calculations
++    QUrl m_currentUrl;
++    qreal m_animationProgress;
++    bool m_active;
++    ContentType m_contentType;
++    QString m_statusText;
++
++    // PDF page navigation
++    int m_pdfCurrentPage = 0;
++    int m_pdfTotalPages = 0;
++    QRect m_pdfArrowUpRect;
++    QRect m_pdfArrowDownRect;
++
++    // PDF page cache (LRU, keyed by page index)
++    static constexpr int PdfCacheMaxPages = 5;
++    QHash<int, QImage> m_pdfPageCache;
++    QList<int> m_pdfCacheLru;
++    void pdfCacheInsert(int pageIndex, const QImage &image);
++    QImage pdfCacheLookup(int pageIndex);
++
++    // Progressive rendering (PDF + Image)
++    QString m_pdfFilePath;
++    QString m_imageFilePath;
++    QSize m_imageOriginalSize;
++    QTimer *m_hiResRenderTimer = nullptr;
++    qreal m_pdfRenderedDpi = 0.0;
++#ifdef HAVE_POPPLER
++    std::unique_ptr<Poppler::Document> m_pdfDocument;
++    std::unique_ptr<Poppler::Page> m_pdfPage;
++    std::unique_ptr<Poppler::Document> m_pdfBgDocument;
++#endif
++    QImage m_hiResLowResImage;
++    qreal m_hiResCrossfade = 1.0;
++    bool m_hiResCrossfading = false;
++    QElapsedTimer m_hiResFadeTimer;
++    int m_imageRenderedWidth = 0;
++    QFutureWatcher<QImage> m_renderWatcher;
++    qreal m_renderTargetDpi = 0.0;
++    bool m_renderPending = false;
++    int m_renderPageIndex = 0;
++    QString m_renderImageFilePath;
++
++    // Async page render (for page navigation)
++    QFutureWatcher<QImage> m_pageRenderWatcher;
++    int m_pageRenderTargetPage = -1;
++    bool m_pageRenderPending = false;
++
++    // PDF page loading spinner
++    bool m_pdfPageLoading = false;
++    qreal m_spinnerAngle = 0.0;
++    QTimer *m_spinnerTimer = nullptr;
++
++    // Zoom & pan
++    qreal m_zoomFactor = 1.0;
++    QPointF m_panOffset;
++    bool m_dragging = false;
++    QPointF m_lastMousePos;
++
++    // Zoom reset animation
++    bool m_zoomAnimating = false;
++    QElapsedTimer m_zoomAnimTimer;
++    qreal m_zoomAnimStartFactor = 1.0;
++    QPointF m_zoomAnimStartPan;
++    int m_zoomAnimDuration = 200;
++
++    // Frame-driven animation (syncs with monitor refresh rate)
++    QElapsedTimer m_animTimer;
++    QEasingCurve m_easingCurve{QEasingCurve::OutCubic};
++    int m_animDuration = 250;
++    bool m_animating = false;
++    bool m_animForward = true;
++    qreal m_animStartValue = 0.0;
++    qreal m_animEndValue = 1.0;
++
++#ifdef HAVE_QTMULTIMEDIA
++    VideoPhase m_videoPhase;
++    QMediaPlayer *m_mediaPlayer;
++    QVideoSink *m_videoSink;
++    QAudioOutput *m_audioOutput;
++    QTimer *m_videoLoadTimer;
 +
 +    // Audio-specific
 +    AudioPhase m_audioPhase = AudioPhase::Animating;
@@ -607,89 +2151,12 @@ index e72c86874..70776031c 100644
 +    qreal m_vinylAngle = 0.0;
 +    QTimer *m_vinylTimer = nullptr;
 +    QAudioDecoder *m_audioDecoder = nullptr;
++    QImage m_audioFrame;
 +    QVector<float> m_audioSamples;
 +    int m_audioSampleRate = 44100;
 +    bool m_audioDecodingDone = false;
 +    QVector<float> m_smoothedSpectrum;
- #endif
- };
- 
-diff --git a/src/views/quicklookrenderer.h b/src/views/quicklookrenderer.h
-index 11ace2486..0f49814b6 100644
---- a/src/views/quicklookrenderer.h
-+++ b/src/views/quicklookrenderer.h
-@@ -32,6 +32,7 @@ public:
-         QString labelText;
-         qreal hiResCrossfade = 1.0;
-         bool isVideoPlaying = false;
-+        bool isAudioContent = false;
- 
-         // PDF navigation arrows
-         bool showPdfArrows = false;
-diff --git a/src/views/quicklookswrenderer.cpp b/src/views/quicklookswrenderer.cpp
-index b62ca8aee..59ef4d212 100644
---- a/src/views/quicklookswrenderer.cpp
-+++ b/src/views/quicklookswrenderer.cpp
-@@ -96,33 +96,41 @@ void QuickLookSWRenderer::render(const RenderState &state)
-     // Image / PDF / Video thumbnail with scale animation
-     const QRectF drawRect = state.drawRect;
- 
--    // Drop shadow
--    const int curShadowOffset = static_cast<int>(ShadowOffset * state.animationProgress);
--    shadowColor.setAlpha(static_cast<int>(ShadowAlphaMax * state.animationProgress));
--    QRectF shadowRect = drawRect.adjusted(curShadowOffset, curShadowOffset, curShadowOffset, curShadowOffset);
--    painter.setPen(Qt::NoPen);
--    painter.setBrush(shadowColor);
--    painter.drawRoundedRect(shadowRect, CornerRadius, CornerRadius);
--
--    // Content with rounded corners + fade
--    painter.setOpacity(state.animationProgress);
-     QPainterPath clipPath;
-     clipPath.addRoundedRect(drawRect, CornerRadius, CornerRadius);
--    painter.setClipPath(clipPath);
- 
--    // Crossfade blend
--    if (state.hiResCrossfade < 1.0 && !m_crossfadeOldPixmap.isNull()) {
--        painter.setOpacity(state.animationProgress * (1.0 - state.hiResCrossfade));
--        painter.drawPixmap(drawRect.toRect(), m_crossfadeOldPixmap);
--
--        painter.setOpacity(state.animationProgress * state.hiResCrossfade);
-+    if (state.isAudioContent) {
-+        // Audio: draw vinyl directly without shadow or rectangular clip
-+        painter.setOpacity(state.animationProgress);
-         painter.drawPixmap(drawRect.toRect(), m_pixmap);
-+        painter.setOpacity(1.0);
-     } else {
--        painter.drawPixmap(drawRect.toRect(), m_pixmap);
--    }
-+        // Drop shadow
-+        const int curShadowOffset = static_cast<int>(ShadowOffset * state.animationProgress);
-+        shadowColor.setAlpha(static_cast<int>(ShadowAlphaMax * state.animationProgress));
-+        QRectF shadowRect = drawRect.adjusted(curShadowOffset, curShadowOffset, curShadowOffset, curShadowOffset);
-+        painter.setPen(Qt::NoPen);
-+        painter.setBrush(shadowColor);
-+        painter.drawRoundedRect(shadowRect, CornerRadius, CornerRadius);
- 
--    painter.setClipping(false);
--    painter.setOpacity(1.0);
-+        // Content with rounded corners + fade
-+        painter.setOpacity(state.animationProgress);
-+        painter.setClipPath(clipPath);
++#endif
++};
 +
-+        // Crossfade blend
-+        if (state.hiResCrossfade < 1.0 && !m_crossfadeOldPixmap.isNull()) {
-+            painter.setOpacity(state.animationProgress * (1.0 - state.hiResCrossfade));
-+            painter.drawPixmap(drawRect.toRect(), m_crossfadeOldPixmap);
-+
-+            painter.setOpacity(state.animationProgress * state.hiResCrossfade);
-+            painter.drawPixmap(drawRect.toRect(), m_pixmap);
-+        } else {
-+            painter.drawPixmap(drawRect.toRect(), m_pixmap);
-+        }
-+
-+        painter.setClipping(false);
-+        painter.setOpacity(1.0);
-+    }
- 
-     // Label — anchored to anchorRect (zoomed but not panned)
-     painter.setPen(textColor);
++#endif // QUICKLOOKOVERLAY_H
