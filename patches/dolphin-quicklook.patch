@@ -1,0 +1,388 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 4faabe9d5..d0f0ffbc5 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -111,6 +111,7 @@ target_sources(dolphinprivate PRIVATE
+     views/dolphinremoteencoding.cpp
+     views/dolphinview.cpp
+     views/dolphinviewactionhandler.cpp
++    views/quicklookoverlay.cpp
+     views/draganddrophelper.cpp
+     views/versioncontrol/updateitemstatesthread.cpp
+     views/versioncontrol/versioncontrolobserver.cpp
+diff --git a/src/views/dolphinview.cpp b/src/views/dolphinview.cpp
+index b01833d69..295529c28 100644
+--- a/src/views/dolphinview.cpp
++++ b/src/views/dolphinview.cpp
+@@ -27,6 +27,7 @@
+ #include "versioncontrol/versioncontrolobserver.h"
+ #include "viewproperties.h"
+ #include "views/tooltips/tooltipmanager.h"
++#include "quicklookoverlay.h"
+ #include "zoomlevelinfo.h"
+ 
+ #if HAVE_BALOO
+@@ -105,6 +106,7 @@ DolphinView::DolphinView(const QUrl &url, QWidget *parent)
+     , m_twoClicksRenamingTimer(nullptr)
+     , m_placeholderLabel(nullptr)
+     , m_showLoadingPlaceholderTimer(nullptr)
++    , m_quickLookOverlay(nullptr)
+ {
+     m_topLayout = new QVBoxLayout(this);
+     m_topLayout->setSpacing(0);
+@@ -252,6 +254,13 @@ DolphinView::DolphinView(const QUrl &url, QWidget *parent)
+     applyViewProperties();
+     m_topLayout->addWidget(m_container);
+ 
++    // Quick Look overlay for inline image preview
++    m_quickLookOverlay = new QuickLookOverlay(m_container);
++    m_quickLookOverlay->hide();
++    connect(m_quickLookOverlay, &QuickLookOverlay::previewClosed, this, [this]() {
++        m_container->setFocus();
++    });
++
+     loadDirectory(url);
+ }
+ 
+@@ -1127,6 +1136,13 @@ void DolphinView::slotItemActivated(int index)
+ 
+     const KFileItem item = m_model->fileItem(index);
+     if (!item.isNull()) {
++        // Quick Look: intercept image files and show inline preview
++        const QString mimeType = item.mimetype();
++        if (QuickLookOverlay::isSupportedMimeType(mimeType)) {
++            m_quickLookOverlay->resize(m_container->size());
++            m_quickLookOverlay->showPreview(item.url());
++            return;
++        }
+         Q_EMIT itemActivated(item);
+     }
+ }
+diff --git a/src/views/dolphinview.h b/src/views/dolphinview.h
+index e3f83979c..3dbeaa60d 100644
+--- a/src/views/dolphinview.h
++++ b/src/views/dolphinview.h
+@@ -40,6 +40,7 @@ class QGraphicsSceneDragDropEvent;
+ class QHelpEvent;
+ class QProxyStyle;
+ class QRegularExpression;
++class QuickLookOverlay;
+ 
+ /**
+  * @short Represents a view for the directory content.
+@@ -1029,6 +1030,9 @@ private:
+     /// Hash table of user-preferred sort orders for each role
+     QHash<QByteArray, Qt::SortOrder> m_rolesSortOrder;
+ 
++    /// Quick Look overlay for inline image preview
++    QuickLookOverlay *m_quickLookOverlay;
++
+     // For unit tests
+     friend class TestBase;
+     friend class DolphinDetailsViewTest;
+diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
+new file mode 100644
+index 000000000..5281f1738
+--- /dev/null
++++ b/src/views/quicklookoverlay.cpp
+@@ -0,0 +1,218 @@
++/*
++ * SPDX-FileCopyrightText: 2026 Mario STJr
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "quicklookoverlay.h"
++
++#include <QEasingCurve>
++#include <QImageReader>
++#include <QKeyEvent>
++#include <QLabel>
++#include <QMimeDatabase>
++#include <QMouseEvent>
++#include <QPainter>
++#include <QPainterPath>
++#include <QPropertyAnimation>
++#include <QResizeEvent>
++
++QuickLookOverlay::QuickLookOverlay(QWidget *parent)
++    : QWidget(parent)
++    , m_animationProgress(0.0)
++    , m_active(false)
++    , m_animation(new QPropertyAnimation(this, "animationProgress", this))
++{
++    setFocusPolicy(Qt::StrongFocus);
++    hide();
++
++    m_animation->setDuration(250);
++    m_animation->setEasingCurve(QEasingCurve::OutCubic);
++}
++
++QuickLookOverlay::~QuickLookOverlay() = default;
++
++bool QuickLookOverlay::isSupportedMimeType(const QString &mimeType)
++{
++    static const QStringList supported = {
++        QStringLiteral("image/png"),
++        QStringLiteral("image/jpeg"),
++        QStringLiteral("image/gif"),
++        QStringLiteral("image/bmp"),
++        QStringLiteral("image/webp"),
++        QStringLiteral("image/svg+xml"),
++        QStringLiteral("image/svg+xml-compressed"),
++        QStringLiteral("image/tiff"),
++        QStringLiteral("image/x-icon"),
++    };
++    return supported.contains(mimeType);
++}
++
++void QuickLookOverlay::showPreview(const QUrl &fileUrl)
++{
++    if (!fileUrl.isLocalFile()) {
++        return;
++    }
++
++    const QString filePath = fileUrl.toLocalFile();
++    QImageReader reader(filePath);
++    reader.setAutoTransform(true);
++    const QImage image = reader.read();
++    if (image.isNull()) {
++        return;
++    }
++
++    m_pixmap = QPixmap::fromImage(image);
++    m_currentUrl = fileUrl;
++    m_active = true;
++
++    resize(parentWidget()->size());
++    show();
++    raise();
++    setFocus();
++
++    startShowAnimation();
++}
++
++void QuickLookOverlay::hidePreview()
++{
++    if (!m_active) {
++        return;
++    }
++    startHideAnimation();
++}
++
++bool QuickLookOverlay::isPreviewActive() const
++{
++    return m_active;
++}
++
++qreal QuickLookOverlay::animationProgress() const
++{
++    return m_animationProgress;
++}
++
++void QuickLookOverlay::setAnimationProgress(qreal progress)
++{
++    m_animationProgress = progress;
++    update();
++
++    if (progress <= 0.0 && m_animation->direction() == QAbstractAnimation::Backward) {
++        m_active = false;
++        hide();
++        Q_EMIT previewClosed();
++    }
++}
++
++void QuickLookOverlay::paintEvent(QPaintEvent *event)
++{
++    Q_UNUSED(event)
++
++    if (m_pixmap.isNull()) {
++        return;
++    }
++
++    QPainter painter(this);
++    painter.setRenderHint(QPainter::Antialiasing);
++    painter.setRenderHint(QPainter::SmoothPixmapTransform);
++
++    // Background overlay with animated opacity
++    const int bgAlpha = static_cast<int>(180 * m_animationProgress);
++    painter.fillRect(rect(), QColor(0, 0, 0, bgAlpha));
++
++    // Calculate target image rect (fit to widget, with padding)
++    const QRect targetRect = scaledImageRect();
++
++    // Animate from center point to full size
++    const QPointF center = QRectF(targetRect).center();
++    const qreal scale = 0.3 + 0.7 * m_animationProgress;
++    const qreal w = targetRect.width() * scale;
++    const qreal h = targetRect.height() * scale;
++    const QRectF drawRect(center.x() - w / 2.0, center.y() - h / 2.0, w, h);
++
++    // Drop shadow
++    const int shadowOffset = static_cast<int>(4 * m_animationProgress);
++    const int shadowAlpha = static_cast<int>(80 * m_animationProgress);
++    QRectF shadowRect = drawRect.adjusted(shadowOffset, shadowOffset, shadowOffset, shadowOffset);
++    painter.setPen(Qt::NoPen);
++    painter.setBrush(QColor(0, 0, 0, shadowAlpha));
++    painter.drawRoundedRect(shadowRect, 6, 6);
++
++    // Image with rounded corners
++    QPainterPath clipPath;
++    clipPath.addRoundedRect(drawRect, 6, 6);
++    painter.setClipPath(clipPath);
++    painter.drawPixmap(drawRect.toRect(), m_pixmap);
++    painter.setClipping(false);
++
++    // Filename at the bottom
++    const QString filename = m_currentUrl.fileName();
++    const int textAlpha = static_cast<int>(255 * m_animationProgress);
++    painter.setPen(QColor(255, 255, 255, textAlpha));
++    QFont font = painter.font();
++    font.setPointSize(11);
++    font.setBold(true);
++    painter.setFont(font);
++
++    const QRect textRect(0, drawRect.bottom() + 12, width(), 30);
++    painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, filename);
++}
++
++void QuickLookOverlay::mouseDoubleClickEvent(QMouseEvent *event)
++{
++    Q_UNUSED(event)
++    hidePreview();
++}
++
++void QuickLookOverlay::keyPressEvent(QKeyEvent *event)
++{
++    if (event->key() == Qt::Key_Escape || event->key() == Qt::Key_Space) {
++        hidePreview();
++        event->accept();
++        return;
++    }
++    QWidget::keyPressEvent(event);
++}
++
++void QuickLookOverlay::resizeEvent(QResizeEvent *event)
++{
++    QWidget::resizeEvent(event);
++    update();
++}
++
++void QuickLookOverlay::startShowAnimation()
++{
++    m_animation->stop();
++    m_animation->setDirection(QAbstractAnimation::Forward);
++    m_animation->setStartValue(0.0);
++    m_animation->setEndValue(1.0);
++    m_animation->start();
++}
++
++void QuickLookOverlay::startHideAnimation()
++{
++    m_animation->stop();
++    m_animation->setDirection(QAbstractAnimation::Backward);
++    m_animation->setStartValue(0.0);
++    m_animation->setEndValue(1.0);
++    m_animation->start();
++}
++
++QRect QuickLookOverlay::scaledImageRect() const
++{
++    if (m_pixmap.isNull()) {
++        return {};
++    }
++
++    const int padding = 40;
++    const int maxW = width() - 2 * padding;
++    const int maxH = height() - 2 * padding - 50; // extra space for filename
++
++    QSize imgSize = m_pixmap.size();
++    imgSize.scale(maxW, maxH, Qt::KeepAspectRatio);
++
++    const int x = (width() - imgSize.width()) / 2;
++    const int y = (height() - imgSize.height()) / 2 - 20;
++
++    return {x, y, imgSize.width(), imgSize.height()};
++}
+diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
+new file mode 100644
+index 000000000..a6fd36de4
+--- /dev/null
++++ b/src/views/quicklookoverlay.h
+@@ -0,0 +1,76 @@
++/*
++ * SPDX-FileCopyrightText: 2026 Mario STJr
++ *
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#ifndef QUICKLOOKOVERLAY_H
++#define QUICKLOOKOVERLAY_H
++
++#include <QWidget>
++#include <QUrl>
++
++class QLabel;
++class QPropertyAnimation;
++
++/**
++ * @brief Overlay widget that provides inline Quick Look preview for image files.
++ *
++ * Displays an image preview with zoom-in/zoom-out animation within the
++ * Dolphin file list container area. Double-clicking the preview dismisses it.
++ */
++class QuickLookOverlay : public QWidget
++{
++    Q_OBJECT
++    Q_PROPERTY(qreal animationProgress READ animationProgress WRITE setAnimationProgress)
++
++public:
++    explicit QuickLookOverlay(QWidget *parent = nullptr);
++    ~QuickLookOverlay() override;
++
++    /**
++     * Shows the preview for the given image file URL with a zoom-in animation.
++     */
++    void showPreview(const QUrl &fileUrl);
++
++    /**
++     * Hides the preview with a zoom-out animation.
++     */
++    void hidePreview();
++
++    /**
++     * @return true if the overlay is currently visible or animating.
++     */
++    bool isPreviewActive() const;
++
++    /**
++     * @return true if the given MIME type is supported for preview.
++     */
++    static bool isSupportedMimeType(const QString &mimeType);
++
++    qreal animationProgress() const;
++    void setAnimationProgress(qreal progress);
++
++Q_SIGNALS:
++    void previewClosed();
++
++protected:
++    void paintEvent(QPaintEvent *event) override;
++    void mouseDoubleClickEvent(QMouseEvent *event) override;
++    void keyPressEvent(QKeyEvent *event) override;
++    void resizeEvent(QResizeEvent *event) override;
++
++private:
++    void startShowAnimation();
++    void startHideAnimation();
++    QRect scaledImageRect() const;
++
++    QPixmap m_pixmap;
++    QUrl m_currentUrl;
++    qreal m_animationProgress;
++    bool m_active;
++
++    QPropertyAnimation *m_animation;
++};
++
++#endif // QUICKLOOKOVERLAY_H
