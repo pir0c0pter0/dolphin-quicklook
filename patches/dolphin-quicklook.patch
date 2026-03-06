@@ -110,10 +110,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..3058a3abb
+index 000000000..abfd5861d
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,478 @@
+@@ -0,0 +1,480 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -509,12 +509,14 @@ index 000000000..3058a3abb
 +    painter.setBrush(shadowColor);
 +    painter.drawRoundedRect(shadowRect, CornerRadius, CornerRadius);
 +
-+    // Content with rounded corners
++    // Content with rounded corners + fade
++    painter.setOpacity(m_animationProgress);
 +    QPainterPath clipPath;
 +    clipPath.addRoundedRect(drawRect, CornerRadius, CornerRadius);
 +    painter.setClipPath(clipPath);
 +    painter.drawPixmap(drawRect.toRect(), m_pixmap);
 +    painter.setClipping(false);
++    painter.setOpacity(1.0);
 +
 +    // Filename + status
 +    const QString label = m_currentUrl.fileName() + m_statusText;
