@@ -131,10 +131,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..36f3bfe4a
+index 000000000..7bb8a372e
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,988 @@
+@@ -0,0 +1,998 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -342,10 +342,9 @@ index 000000000..36f3bfe4a
 +        return;
 +    }
 +
-+    // Cancel any in-progress hi-res render
++    // Stop scheduled renders; any in-flight render will be discarded
++    // by onHiResRenderFinished via page index mismatch check
 +    m_pdfRenderTimer->stop();
-+    m_renderWatcher.cancel();
-+    m_renderPending = false;
 +
 +    // Reset zoom when changing pages
 +    resetZoom();
@@ -678,6 +677,7 @@ index 000000000..36f3bfe4a
 +
 +        m_renderTargetDpi = targetDpi;
 +        m_renderPending = true;
++        m_renderPageIndex = m_pdfCurrentPage;
 +
 +        // Poppler is NOT thread-safe per document, so we load a fresh
 +        // document+page inside the worker thread
@@ -732,6 +732,16 @@ index 000000000..36f3bfe4a
 +    m_renderPending = false;
 +
 +    if (!m_active) {
++        return;
++    }
++
++    // Discard result if page changed since this render was started
++    if (m_renderWatcher.isCanceled()) {
++        return;
++    }
++
++    // Discard stale hi-res render for a different page
++    if (m_contentType == ContentType::Pdf && m_renderPageIndex != m_pdfCurrentPage) {
 +        return;
 +    }
 +
@@ -1125,10 +1135,10 @@ index 000000000..36f3bfe4a
 +}
 diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
 new file mode 100644
-index 000000000..ccd6d3be3
+index 000000000..164521a9b
 --- /dev/null
 +++ b/src/views/quicklookoverlay.h
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,170 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -1264,6 +1274,7 @@ index 000000000..ccd6d3be3
 +    QFutureWatcher<QImage> m_renderWatcher;
 +    qreal m_renderTargetDpi = 0.0;
 +    bool m_renderPending = false;
++    int m_renderPageIndex = 0;
 +
 +    // Zoom & pan
 +    qreal m_zoomFactor = 1.0;
