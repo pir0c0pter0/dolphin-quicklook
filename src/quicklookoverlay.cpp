@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: 2026 Mario STJr
+ * SPDX-FileCopyrightText: 2026 pir0c0pter0
  *
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
