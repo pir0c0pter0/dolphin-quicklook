@@ -13,6 +13,7 @@ Complete guide to using the Quick Look feature in KDE Dolphin.
 - [Zooming](#zooming)
 - [PDF Navigation](#pdf-navigation)
 - [Video Playback](#video-playback)
+- [Audio Playback](#audio-playback)
 - [Rendering Modes](#rendering-modes)
 - [Supported Formats](#supported-formats)
 - [Optional Dependencies](#optional-dependencies)
@@ -28,6 +29,7 @@ Supported content types:
 - **Images** -- always available (PNG, JPEG, WebP, SVG, GIF, TIFF, AVIF, HEIF, JXL, and more)
 - **PDFs** -- requires `poppler-qt6` at build time
 - **Videos** -- requires `qt6-multimedia` at build time
+- **Audio** -- requires `qt6-multimedia` at build time
 
 If the file is not a supported type, Dolphin opens it normally with the default application.
 
@@ -174,6 +176,54 @@ Video codec support depends on your system's multimedia backends:
 
 Most Linux distributions include wide codec support out of the box. If a specific format doesn't play, install additional codec packages for your distribution.
 
+## Audio Playback
+
+### Opening an Audio File
+
+Double-click an audio file (MP3, FLAC, OGG, WAV, etc.). Quick Look displays a rotating vinyl record with a real-time spectrum analyzer.
+
+### Visual Elements
+
+| Element | Description |
+|---------|-------------|
+| Vinyl disc | Realistic rotating record with grooves and light reflections |
+| Green center label | Conical gradient with depth overlay, mimics classic vinyl labels |
+| Spectrum bars | 48 radial bars inside the center label, driven by real-time FFT analysis |
+| Spindle hole | Small center dot completing the vinyl look |
+
+### Playback Behavior
+
+| Property | Value |
+|----------|-------|
+| Looping | Yes, infinite loop |
+| Audio | Plays at 50% volume |
+| Auto-play | Starts after open animation completes |
+| On close | Pauses immediately |
+| Time display | Shows current / total duration (h:mm:ss for tracks over 60 minutes) |
+
+### Spectrum Analyzer
+
+The spectrum visualization uses a 1024-point FFT window to analyze the audio in real-time:
+
+- **48 frequency bars** arranged radially inside the vinyl's center label
+- **Exponential smoothing** (0.35 new / 0.65 previous) for fluid animation
+- **Logarithmic frequency mapping** -- bass frequencies get more visual space
+- **Green gradient** bars matching the vinyl label color scheme
+- Updates at ~30 FPS, synchronized with vinyl rotation
+
+### Zoom
+
+Zoom is **disabled** for audio content since the vinyl is a fixed-size visualization, not zoomable content.
+
+### Codec Support
+
+Audio codec support depends on your system's multimedia backends (same as video):
+
+- **GStreamer** -- most common on Linux
+- **FFmpeg** -- alternative backend
+
+Common formats (MP3, FLAC, OGG, WAV) work out of the box on most distributions.
+
 ## Rendering Modes
 
 Quick Look automatically selects the best rendering mode for your system.
@@ -252,12 +302,27 @@ Build with `poppler-qt6` to enable. Without it, PDF files open in the default ap
 
 Build with `qt6-multimedia` to enable. Without it, video files open in the default player.
 
+### Audio (Requires Qt Multimedia)
+
+| Format | Extensions |
+|--------|------------|
+| MP3 | `.mp3` |
+| FLAC | `.flac` |
+| OGG Vorbis | `.ogg` |
+| WAV | `.wav` |
+| AAC / M4A | `.aac`, `.m4a` |
+| Opus | `.opus` |
+| WMA | `.wma` |
+| AIFF | `.aiff` |
+
+Build with `qt6-multimedia` to enable. Without it, audio files open in the default player.
+
 ## Optional Dependencies
 
 | Dependency | What It Enables | Package Name |
 |------------|-----------------|--------------|
 | Poppler (Qt6) | PDF preview | `poppler-qt6` (Arch), `poppler-qt6-devel` (Fedora), `libpoppler-qt6-dev` (Debian) |
-| Qt6 Multimedia | Video preview | `qt6-multimedia` (Arch), `qt6-qtmultimedia-devel` (Fedora), `qt6-multimedia-dev` (Debian) |
+| Qt6 Multimedia | Video and audio preview | `qt6-multimedia` (Arch), `qt6-qtmultimedia-devel` (Fedora), `qt6-multimedia-dev` (Debian) |
 | Qt6 Image Formats | AVIF, HEIF, JXL | `qt6-imageformats` (Arch), `qt6-qtimageformats` (Fedora), `qt6-image-formats-plugins` (Debian) |
 | KDE Image Formats | Additional formats | `kimageformats` |
 
@@ -267,9 +332,9 @@ Image preview (PNG, JPEG, WebP, SVG, etc.) works without any optional dependenci
 
 ### Preview doesn't open
 
-- **File type not supported** -- Quick Look only handles images, PDFs, and videos. Other files open with the default application.
+- **File type not supported** -- Quick Look only handles images, PDFs, videos, and audio files. Other files open with the default application.
 - **PDF not opening** -- Dolphin was built without Poppler support. Rebuild with `poppler-qt6` installed.
-- **Video not opening** -- Dolphin was built without Qt Multimedia. Rebuild with `qt6-multimedia` installed.
+- **Video or audio not opening** -- Dolphin was built without Qt Multimedia. Rebuild with `qt6-multimedia` installed.
 
 ### HEIF/HEIC files don't load
 
@@ -297,12 +362,13 @@ sudo apt install qt6-image-formats-plugins
 - Pages are rendered asynchronously -- the UI remains responsive during loading.
 - Adjacent pages are prefetched, so the next/previous page is usually already cached.
 
-### Video doesn't play / no audio
+### Video doesn't play / no audio / audio file shows no spectrum
 
 - Check that your system has GStreamer or FFmpeg codec support installed.
 - On Arch: `sudo pacman -S gst-plugins-good gst-plugins-bad gst-plugins-ugly gst-libav`
 - On Fedora: `sudo dnf install gstreamer1-plugins-good gstreamer1-plugins-bad-free`
 - On Ubuntu: `sudo apt install gstreamer1.0-plugins-good gstreamer1.0-plugins-bad`
+- For audio files: the vinyl will still rotate even if the audio decoder fails, but the spectrum bars won't appear. This usually means the codec is not installed.
 
 ### Zoom doesn't work
 

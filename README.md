@@ -1,6 +1,6 @@
 # Dolphin Quick Look
 
-**macOS-style Quick Look for KDE Dolphin.** Double-click an image, PDF, or video to preview it inline with smooth animations. Double-click again (or press `Escape`) to return to the file list.
+**macOS-style Quick Look for KDE Dolphin.** Double-click an image, PDF, video, or audio file to preview it inline with smooth animations. Double-click again (or press `Escape`) to return to the file list.
 
 No external apps. No popups. Everything happens inside Dolphin.
 
@@ -58,6 +58,15 @@ No external apps. No popups. Everything happens inside Dolphin.
 - **Smart loading** — extracts first frame as thumbnail, then starts playback after animation completes
 - **Timeout protection** — auto-closes if first frame doesn't arrive within 3 seconds
 
+### Audio Preview (optional — requires Qt Multimedia)
+
+- **Rotating vinyl record** — realistic vinyl disc visualization with grooves, highlight reflections, green center label, and spindle hole
+- **Real-time FFT spectrum** — 48-bar radial spectrum analyzer rendered inside the vinyl center label, driven by live audio decoding
+- **Smooth spectrum animation** — exponential smoothing (0.35/0.65 blend) prevents flickering between frames
+- **Playback time display** — current position and total duration shown below the vinyl (supports h:mm:ss for long tracks)
+- **Looping playback** — audio restarts automatically
+- **Audio at 50% volume** — same default as video
+
 ### HiDPI Support
 
 - **DPI-aware text** — labels rendered at full device pixel ratio
@@ -70,13 +79,14 @@ No external apps. No popups. Everything happens inside Dolphin.
 - **Page navigation guard** — stale render results are discarded if the user navigated away
 - **Active state checks** — async callbacks bail out if the preview was closed
 - **Video phase management** — enum-based state machine prevents frame processing conflicts
+- **Audio decoder error handling** — graceful fallback when audio decoding fails
 - **Null guards** — defensive checks throughout to prevent crashes on edge cases
 
 ## Demo
 
 | Action | Result |
 |--------|--------|
-| Double-click image/PDF/video | Preview opens with zoom-in animation |
+| Double-click image/PDF/video/audio | Preview opens with zoom-in animation |
 | Double-click preview | Preview closes with fade-out animation |
 | Press `Escape` or `Space` | Preview closes |
 | Scroll wheel over preview | Zoom in/out (1x-5x) |
@@ -154,7 +164,7 @@ sudo xbps-install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-de
 sudo emerge dev-vcs/git dev-build/cmake kde-frameworks/extra-cmake-modules dev-qt/qtbase dev-qt/qtmultimedia kde-frameworks/kio app-text/poppler[qt6]
 ```
 
-> **Note:** `qt6-multimedia` and `poppler-qt6` are optional. Without them, video and PDF preview will be disabled respectively. Image preview always works.
+> **Note:** `qt6-multimedia` and `poppler-qt6` are optional. Without them, video/audio and PDF preview will be disabled respectively. Image preview always works.
 
 ### Uninstall
 
@@ -274,11 +284,29 @@ Renders pages with navigation. Requires `poppler-qt6` at build time.
 
 Videos play inline with looping and audio. Requires `qt6-multimedia` at build time.
 
+### Audio (optional -- requires Qt Multimedia)
+
+| Format | Extension | MIME Type |
+|--------|-----------|-----------|
+| MP3 | `.mp3` | `audio/mpeg` |
+| FLAC | `.flac` | `audio/flac` |
+| OGG Vorbis | `.ogg` | `audio/ogg` |
+| WAV | `.wav` | `audio/wav` |
+| AAC / M4A | `.aac`, `.m4a` | `audio/aac`, `audio/mp4` |
+| Opus | `.opus` | `audio/opus` |
+| WMA | `.wma` | `audio/x-ms-wma` |
+| AIFF | `.aiff` | `audio/aiff` |
+
+> **Note:** Actual codec support depends on your system's GStreamer or FFmpeg backends.
+
+Audio files display a rotating vinyl record with a real-time FFT spectrum analyzer. Requires `qt6-multimedia` at build time.
+
 ## Roadmap
 
 - [x] Inline image preview with animation
 - [x] PDF preview with multi-page navigation
 - [x] Video preview with inline playback
+- [x] Audio preview with vinyl visualization and FFT spectrum
 - [x] GPU-accelerated rendering with software fallback
 - [x] Zoom with scroll wheel and pan
 - [x] HiDPI support
