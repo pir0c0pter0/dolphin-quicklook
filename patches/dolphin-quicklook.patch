@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d639f6568..714cd141f 100644
+index d639f6568..041b6b907 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -58,6 +58,19 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
@@ -22,13 +22,21 @@ index d639f6568..714cd141f 100644
  if (Qt6Gui_VERSION VERSION_GREATER_EQUAL "6.10.0")
      find_package(Qt6GuiPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
  endif()
-@@ -113,6 +126,17 @@ if(PackageKitQt6_FOUND)
+@@ -113,6 +126,25 @@ if(PackageKitQt6_FOUND)
      set(HAVE_PACKAGEKIT TRUE)
  endif()
  
-+find_package(PkgConfig QUIET)
-+if(PkgConfig_FOUND)
-+    pkg_check_modules(POPPLER_QT6 poppler-qt6)
++find_package(PopplerQt6 QUIET)
++if(NOT PopplerQt6_FOUND)
++    find_package(PkgConfig QUIET)
++    if(PkgConfig_FOUND)
++        pkg_check_modules(POPPLER_QT6 poppler-qt6)
++    endif()
++endif()
++if(PopplerQt6_FOUND AND NOT POPPLER_QT6_FOUND)
++    set(POPPLER_QT6_FOUND TRUE)
++    set(POPPLER_QT6_INCLUDE_DIRS ${PopplerQt6_INCLUDE_DIRS})
++    set(POPPLER_QT6_LIBRARIES PopplerQt6::PopplerQt6)
 +endif()
 +set_package_properties(POPPLER_QT6 PROPERTIES
 +    DESCRIPTION "Poppler Qt6 PDF rendering library"
@@ -40,7 +48,7 @@ index d639f6568..714cd141f 100644
  find_package(KF6FileMetaData ${KF6_MIN_VERSION})
  set_package_properties(KF6FileMetaData PROPERTIES
                         URL "https://projects.kde.org/kfilemetadata"
-@@ -136,11 +160,6 @@ set_package_properties(KF6BalooWidgets PROPERTIES DESCRIPTION "Baloos Widgets"
+@@ -136,11 +168,6 @@ set_package_properties(KF6BalooWidgets PROPERTIES DESCRIPTION "Baloos Widgets"
  if (KF6Baloo_FOUND AND KF6BalooWidgets_FOUND)
      message(STATUS "Baloo packages are found")
      set(HAVE_BALOO TRUE)
@@ -185,10 +193,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..412fb853c
+index 000000000..307575831
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,520 @@
+@@ -0,0 +1,537 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -285,6 +293,16 @@ index 000000000..412fb853c
 +{
 +    QImageReader reader(filePath);
 +    reader.setAutoTransform(true);
++
++    // Cap decoded size to 4K to prevent OOM on very large images
++    const QSize maxSize(3840, 2160);
++    const QSize imgSize = reader.size();
++    if (imgSize.isValid() && (imgSize.width() > maxSize.width() || imgSize.height() > maxSize.height())) {
++        QSize scaled = imgSize;
++        scaled.scale(maxSize, Qt::KeepAspectRatio);
++        reader.setScaledSize(scaled);
++    }
++
 +    const QImage image = reader.read();
 +    if (image.isNull()) {
 +        return false;
@@ -360,6 +378,7 @@ index 000000000..412fb853c
 +            m_active = false;
 +            cleanupVideo();
 +            hide();
++            Q_EMIT previewClosed();
 +        }
 +    });
 +    m_videoLoadTimer->start(VideoLoadTimeoutMs);
@@ -368,6 +387,7 @@ index 000000000..412fb853c
 +        m_active = false;
 +        cleanupVideo();
 +        hide();
++        Q_EMIT previewClosed();
 +    });
 +
 +    connect(m_videoSink, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame &frame) {
@@ -439,6 +459,9 @@ index 000000000..412fb853c
 +
 +void QuickLookOverlay::showPreview(const QUrl &fileUrl)
 +{
++    // Cancel any in-progress animation to avoid race conditions
++    m_animating = false;
++
 +    if (!fileUrl.isLocalFile()) {
 +        return;
 +    }
@@ -524,7 +547,8 @@ index 000000000..412fb853c
 +    }
 +
 +    const qreal elapsed = static_cast<qreal>(m_animTimer.elapsed());
-+    const qreal t = qBound(0.0, elapsed / m_animDuration, 1.0);
++    const qreal duration = qMax(1.0, static_cast<qreal>(m_animDuration));
++    const qreal t = qBound(0.0, elapsed / duration, 1.0);
 +    const qreal easedT = m_easingCurve.valueForProgress(t);
 +    m_animationProgress = m_animStartValue + (m_animEndValue - m_animStartValue) * easedT;
 +
@@ -545,6 +569,7 @@ index 000000000..412fb853c
 +#endif
 +    } else {
 +        m_active = false;
++        m_pixmap = QPixmap();
 +#ifdef HAVE_QTMULTIMEDIA
 +        cleanupVideo();
 +#endif
