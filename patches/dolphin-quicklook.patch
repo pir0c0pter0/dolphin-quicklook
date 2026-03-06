@@ -26,7 +26,7 @@ index 4faabe9d5..023f0e4d5 100644
      target_link_libraries(
          dolphinprivate PUBLIC
 diff --git a/src/views/dolphinview.cpp b/src/views/dolphinview.cpp
-index b01833d69..ec87e1b27 100644
+index b01833d69..e6b559ab0 100644
 --- a/src/views/dolphinview.cpp
 +++ b/src/views/dolphinview.cpp
 @@ -27,6 +27,7 @@
@@ -76,9 +76,9 @@ index b01833d69..ec87e1b27 100644
  
      const KFileItem item = m_model->fileItem(index);
      if (!item.isNull()) {
-+        // Quick Look: intercept image files and show inline preview
++        // Quick Look: intercept supported files and show inline preview
 +        const QString mimeType = item.mimetype();
-+        if (QuickLookOverlay::isSupportedMimeType(mimeType)) {
++        if (m_quickLookOverlay && QuickLookOverlay::isSupportedMimeType(mimeType)) {
 +            m_quickLookOverlay->resize(m_container->size());
 +            m_quickLookOverlay->showPreview(item.url());
 +            return;
@@ -110,10 +110,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..abfd5861d
+index 000000000..2ac71245e
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,480 @@
+@@ -0,0 +1,507 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -133,6 +133,7 @@ index 000000000..abfd5861d
 +#include <QPainter>
 +#include <QPainterPath>
 +#include <QResizeEvent>
++#include <QTimer>
 +#include <QVideoFrame>
 +#include <QVideoSink>
 +
@@ -143,6 +144,11 @@ index 000000000..abfd5861d
 +    constexpr int TextHeight = 30;
 +    constexpr int BgAlphaMax = 180;
 +    constexpr int ShadowAlphaMax = 80;
++    constexpr int ContentPadding = 40;
++    constexpr int BottomExtraSpace = 50;
++    constexpr int ContentVerticalShift = 20;
++    constexpr int VideoLoadTimeoutMs = 3000;
++    constexpr qreal DefaultVolume = 0.5;
 +}
 +
 +#ifdef HAVE_POPPLER
@@ -158,6 +164,7 @@ index 000000000..abfd5861d
 +    , m_mediaPlayer(nullptr)
 +    , m_videoSink(nullptr)
 +    , m_audioOutput(nullptr)
++    , m_videoLoadTimer(nullptr)
 +{
 +    setFocusPolicy(Qt::StrongFocus);
 +    hide();
@@ -257,7 +264,7 @@ index 000000000..abfd5861d
 +    m_statusText.clear();
 +
 +    m_audioOutput = new QAudioOutput(this);
-+    m_audioOutput->setVolume(0.5);
++    m_audioOutput->setVolume(DefaultVolume);
 +
 +    m_mediaPlayer = new QMediaPlayer(this);
 +    m_mediaPlayer->setAudioOutput(m_audioOutput);
@@ -267,6 +274,17 @@ index 000000000..abfd5861d
 +
 +    m_mediaPlayer->setSource(fileUrl);
 +    m_mediaPlayer->setLoops(QMediaPlayer::Infinite);
++
++    m_videoLoadTimer = new QTimer(this);
++    m_videoLoadTimer->setSingleShot(true);
++    connect(m_videoLoadTimer, &QTimer::timeout, this, [this]() {
++        if (m_videoPhase == VideoPhase::Loading) {
++            m_active = false;
++            cleanupVideo();
++            hide();
++        }
++    });
++    m_videoLoadTimer->start(VideoLoadTimeoutMs);
 +
 +    connect(m_mediaPlayer, &QMediaPlayer::errorOccurred, this, [this]() {
 +        m_active = false;
@@ -286,7 +304,12 @@ index 000000000..abfd5861d
 +        }
 +
 +        if (m_videoPhase == VideoPhase::Loading) {
-+            // First frame arrived — use as thumbnail for open animation
++            // First frame arrived — cancel timeout and use as thumbnail
++            if (m_videoLoadTimer) {
++                m_videoLoadTimer->stop();
++                m_videoLoadTimer->deleteLater();
++                m_videoLoadTimer = nullptr;
++            }
 +            m_pixmap = QPixmap::fromImage(image);
 +            m_videoPhase = VideoPhase::Animating;
 +            m_mediaPlayer->pause();
@@ -315,6 +338,11 @@ index 000000000..abfd5861d
 +
 +void QuickLookOverlay::cleanupVideo()
 +{
++    if (m_videoLoadTimer) {
++        m_videoLoadTimer->stop();
++        m_videoLoadTimer->deleteLater();
++        m_videoLoadTimer = nullptr;
++    }
 +    if (m_mediaPlayer) {
 +        m_mediaPlayer->stop();
 +        m_mediaPlayer->deleteLater();
@@ -337,7 +365,7 @@ index 000000000..abfd5861d
 +    }
 +
 +    const QString filePath = fileUrl.toLocalFile();
-+    QMimeDatabase mimeDb;
++    static QMimeDatabase mimeDb;
 +    const QString mimeType = mimeDb.mimeTypeForFile(filePath).name();
 +
 +    bool loaded = false;
@@ -576,9 +604,8 @@ index 000000000..abfd5861d
 +
 +QRect QuickLookOverlay::scaledContentRect() const
 +{
-+    const int padding = 40;
-+    const int maxW = width() - 2 * padding;
-+    const int maxH = height() - 2 * padding - 50;
++    const int maxW = width() - 2 * ContentPadding;
++    const int maxH = height() - 2 * ContentPadding - BottomExtraSpace;
 +
 +    QSize contentSize;
 +    if (!m_pixmap.isNull()) {
@@ -590,16 +617,16 @@ index 000000000..abfd5861d
 +    contentSize.scale(maxW, maxH, Qt::KeepAspectRatio);
 +
 +    const int x = (width() - contentSize.width()) / 2;
-+    const int y = (height() - contentSize.height()) / 2 - 20;
++    const int y = (height() - contentSize.height()) / 2 - ContentVerticalShift;
 +
 +    return {x, y, contentSize.width(), contentSize.height()};
 +}
 diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
 new file mode 100644
-index 000000000..c2c0876b2
+index 000000000..349eedac9
 --- /dev/null
 +++ b/src/views/quicklookoverlay.h
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,97 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -616,6 +643,7 @@ index 000000000..c2c0876b2
 +
 +class QLabel;
 +class QMediaPlayer;
++class QTimer;
 +class QVideoSink;
 +class QAudioOutput;
 +
@@ -692,6 +720,7 @@ index 000000000..c2c0876b2
 +    QMediaPlayer *m_mediaPlayer;
 +    QVideoSink *m_videoSink;
 +    QAudioOutput *m_audioOutput;
++    QTimer *m_videoLoadTimer;
 +};
 +
 +#endif // QUICKLOOKOVERLAY_H
