@@ -1,65 +1,3 @@
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d639f6568..041b6b907 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -58,6 +58,19 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
-     DBus
- )
- 
-+find_package(Qt6 ${QT_MIN_VERSION} CONFIG QUIET COMPONENTS
-+    Multimedia
-+    MultimediaWidgets
-+)
-+if(Qt6Multimedia_FOUND AND Qt6MultimediaWidgets_FOUND)
-+    set(HAVE_QTMULTIMEDIA TRUE)
-+endif()
-+set_package_properties(Qt6Multimedia PROPERTIES
-+    DESCRIPTION "Qt Multimedia module"
-+    TYPE OPTIONAL
-+    PURPOSE "Required for video preview in Quick Look overlay"
-+)
-+
- if (Qt6Gui_VERSION VERSION_GREATER_EQUAL "6.10.0")
-     find_package(Qt6GuiPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
- endif()
-@@ -113,6 +126,25 @@ if(PackageKitQt6_FOUND)
-     set(HAVE_PACKAGEKIT TRUE)
- endif()
- 
-+find_package(PopplerQt6 QUIET)
-+if(NOT PopplerQt6_FOUND)
-+    find_package(PkgConfig QUIET)
-+    if(PkgConfig_FOUND)
-+        pkg_check_modules(POPPLER_QT6 poppler-qt6)
-+    endif()
-+endif()
-+if(PopplerQt6_FOUND AND NOT POPPLER_QT6_FOUND)
-+    set(POPPLER_QT6_FOUND TRUE)
-+    set(POPPLER_QT6_INCLUDE_DIRS ${PopplerQt6_INCLUDE_DIRS})
-+    set(POPPLER_QT6_LIBRARIES PopplerQt6::PopplerQt6)
-+endif()
-+set_package_properties(POPPLER_QT6 PROPERTIES
-+    DESCRIPTION "Poppler Qt6 PDF rendering library"
-+    URL "https://poppler.freedesktop.org/"
-+    TYPE OPTIONAL
-+    PURPOSE "Required for PDF preview in Quick Look overlay"
-+)
-+
- find_package(KF6FileMetaData ${KF6_MIN_VERSION})
- set_package_properties(KF6FileMetaData PROPERTIES
-                        URL "https://projects.kde.org/kfilemetadata"
-@@ -136,11 +168,6 @@ set_package_properties(KF6BalooWidgets PROPERTIES DESCRIPTION "Baloos Widgets"
- if (KF6Baloo_FOUND AND KF6BalooWidgets_FOUND)
-     message(STATUS "Baloo packages are found")
-     set(HAVE_BALOO TRUE)
--
--    find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
--        Multimedia
--        MultimediaWidgets
--    )
- else ()
-     message(WARNING "Baloo packages not found. They are needed for the metadata features of Dolphin (including the information panel).")
- endif()
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 4faabe9d5..9d9b0f829 100644
 --- a/src/CMakeLists.txt
@@ -193,10 +131,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..fdf6e1214
+index 000000000..36f3bfe4a
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,867 @@
+@@ -0,0 +1,988 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -346,36 +284,76 @@ index 000000000..fdf6e1214
 +    m_pdfDocument->setRenderHint(Poppler::Document::Antialiasing);
 +    m_pdfDocument->setRenderHint(Poppler::Document::TextAntialiasing);
 +
-+    m_pdfPage = m_pdfDocument->page(0);
++    m_pdfTotalPages = m_pdfDocument->numPages();
++    m_pdfCurrentPage = 0;
++    m_pdfFilePath = filePath;
++    m_contentType = ContentType::Pdf;
++    m_imageFilePath.clear();
++
++    renderPdfPage(0);
++
++    return !m_pixmap.isNull();
++#else
++    Q_UNUSED(filePath)
++    return false;
++#endif
++}
++
++void QuickLookOverlay::renderPdfPage(int pageIndex)
++{
++#ifdef HAVE_POPPLER
++    if (!m_pdfDocument || pageIndex < 0 || pageIndex >= m_pdfTotalPages) {
++        return;
++    }
++
++    m_pdfPage = m_pdfDocument->page(pageIndex);
 +    if (!m_pdfPage) {
-+        m_pdfDocument.reset();
-+        return false;
++        return;
 +    }
 +
 +    const QImage image = m_pdfPage->renderToImage(PdfBaseDpi, PdfBaseDpi);
 +    if (image.isNull()) {
-+        m_pdfPage.reset();
-+        m_pdfDocument.reset();
-+        return false;
++        return;
 +    }
 +
 +    m_pixmap = QPixmap::fromImage(image);
-+    m_contentType = ContentType::Pdf;
-+    m_pdfFilePath = filePath;
 +    m_pdfRenderedDpi = PdfBaseDpi;
-+    m_imageFilePath.clear();
 +    m_hiResLowResPixmap = QPixmap();
 +    m_hiResCrossfading = false;
++    m_pdfCurrentPage = pageIndex;
 +
-+    const int totalPages = m_pdfDocument->numPages();
-+    m_statusText = (totalPages > 1)
-+        ? QStringLiteral(" — %1 pages").arg(totalPages)
++    m_statusText = (m_pdfTotalPages > 1)
++        ? QStringLiteral(" — Page %1 of %2").arg(pageIndex + 1).arg(m_pdfTotalPages)
 +        : QStringLiteral(" — 1 page");
-+
-+    return true;
 +#else
-+    Q_UNUSED(filePath)
-+    return false;
++    Q_UNUSED(pageIndex)
++#endif
++}
++
++void QuickLookOverlay::navigatePdfPage(int direction)
++{
++#ifdef HAVE_POPPLER
++    if (m_contentType != ContentType::Pdf || m_pdfTotalPages <= 1) {
++        return;
++    }
++
++    const int newPage = m_pdfCurrentPage + direction;
++    if (newPage < 0 || newPage >= m_pdfTotalPages) {
++        return;
++    }
++
++    // Cancel any in-progress hi-res render
++    m_pdfRenderTimer->stop();
++    m_renderWatcher.cancel();
++    m_renderPending = false;
++
++    // Reset zoom when changing pages
++    resetZoom();
++
++    renderPdfPage(newPage);
++    update();
++#else
++    Q_UNUSED(direction)
 +#endif
 +}
 +
@@ -705,14 +683,15 @@ index 000000000..fdf6e1214
 +        // document+page inside the worker thread
 +        const QString filePath = m_pdfFilePath;
 +        const qreal dpi = targetDpi;
-+        m_renderWatcher.setFuture(QtConcurrent::run([filePath, dpi]() -> QImage {
++        const int pageIndex = m_pdfCurrentPage;
++        m_renderWatcher.setFuture(QtConcurrent::run([filePath, dpi, pageIndex]() -> QImage {
 +            auto doc = Poppler::Document::load(filePath);
 +            if (!doc) {
 +                return {};
 +            }
 +            doc->setRenderHint(Poppler::Document::Antialiasing);
 +            doc->setRenderHint(Poppler::Document::TextAntialiasing);
-+            auto pg = doc->page(0);
++            auto pg = doc->page(pageIndex);
 +            if (!pg) {
 +                return {};
 +            }
@@ -887,6 +866,57 @@ index 000000000..fdf6e1214
 +    const QRect textRect(0, drawRect.bottom() + TextSpacing, width(), TextHeight);
 +    painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, label);
 +
++    // PDF page navigation arrows (up/down)
++    if (m_contentType == ContentType::Pdf && m_pdfTotalPages > 1 && m_animationProgress > 0.5) {
++        const int arrowSize = 36;
++        const int arrowMargin = 16;
++        const int arrowX = drawRect.right() + arrowMargin;
++        const int centerY = drawRect.center().y();
++
++        // Arrow up
++        m_pdfArrowUpRect = QRect(arrowX, centerY - arrowSize - 4, arrowSize, arrowSize);
++        // Arrow down
++        m_pdfArrowDownRect = QRect(arrowX, centerY + 4, arrowSize, arrowSize);
++
++        const bool canGoUp = m_pdfCurrentPage > 0;
++        const bool canGoDown = m_pdfCurrentPage < m_pdfTotalPages - 1;
++
++        auto drawArrowButton = [&](const QRect &btnRect, bool enabled, bool pointsUp) {
++            const qreal btnOpacity = enabled ? 0.85 : 0.3;
++            painter.setOpacity(m_animationProgress * btnOpacity);
++
++            // Button background
++            painter.setPen(Qt::NoPen);
++            painter.setBrush(QColor(255, 255, 255, 40));
++            painter.drawRoundedRect(btnRect, 8, 8);
++
++            // Arrow triangle
++            const int pad = 10;
++            const QPointF c = QRectF(btnRect).center();
++            const int half = (arrowSize - 2 * pad) / 2;
++            QPolygonF triangle;
++            if (pointsUp) {
++                triangle << QPointF(c.x(), c.y() - half)
++                         << QPointF(c.x() - half, c.y() + half)
++                         << QPointF(c.x() + half, c.y() + half);
++            } else {
++                triangle << QPointF(c.x(), c.y() + half)
++                         << QPointF(c.x() - half, c.y() - half)
++                         << QPointF(c.x() + half, c.y() - half);
++            }
++            painter.setBrush(QColor(255, 255, 255));
++            painter.drawPolygon(triangle);
++        };
++
++        drawArrowButton(m_pdfArrowUpRect, canGoUp, true);
++        drawArrowButton(m_pdfArrowDownRect, canGoDown, false);
++
++        painter.setOpacity(1.0);
++    } else {
++        m_pdfArrowUpRect = QRect();
++        m_pdfArrowDownRect = QRect();
++    }
++
 +    // Schedule next frame if animation is still running
 +    if (m_animating || m_zoomAnimating || m_hiResCrossfading) {
 +        update();
@@ -901,6 +931,21 @@ index 000000000..fdf6e1214
 +
 +void QuickLookOverlay::mousePressEvent(QMouseEvent *event)
 +{
++    // PDF page navigation arrow clicks
++    if (event->button() == Qt::LeftButton && m_contentType == ContentType::Pdf && m_pdfTotalPages > 1) {
++        const QPoint pos = event->pos();
++        if (m_pdfArrowUpRect.contains(pos) && m_pdfCurrentPage > 0) {
++            navigatePdfPage(-1);
++            event->accept();
++            return;
++        }
++        if (m_pdfArrowDownRect.contains(pos) && m_pdfCurrentPage < m_pdfTotalPages - 1) {
++            navigatePdfPage(1);
++            event->accept();
++            return;
++        }
++    }
++
 +    if (event->button() == Qt::RightButton && m_zoomFactor > ZoomMin) {
 +        animateZoomReset();
 +        event->accept();
@@ -993,6 +1038,20 @@ index 000000000..fdf6e1214
 +        event->accept();
 +        return;
 +    }
++
++    if (m_contentType == ContentType::Pdf && m_pdfTotalPages > 1) {
++        if (event->key() == Qt::Key_Up || event->key() == Qt::Key_PageUp) {
++            navigatePdfPage(-1);
++            event->accept();
++            return;
++        }
++        if (event->key() == Qt::Key_Down || event->key() == Qt::Key_PageDown) {
++            navigatePdfPage(1);
++            event->accept();
++            return;
++        }
++    }
++
 +    QWidget::keyPressEvent(event);
 +}
 +
@@ -1066,10 +1125,10 @@ index 000000000..fdf6e1214
 +}
 diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
 new file mode 100644
-index 000000000..67e63e4a5
+index 000000000..ccd6d3be3
 --- /dev/null
 +++ b/src/views/quicklookoverlay.h
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,169 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -1156,6 +1215,8 @@ index 000000000..67e63e4a5
 +
 +    bool loadImage(const QString &filePath);
 +    bool loadPdf(const QString &filePath);
++    void navigatePdfPage(int direction);
++    void renderPdfPage(int pageIndex);
 +
 +#ifdef HAVE_QTMULTIMEDIA
 +    void setupVideo(const QUrl &fileUrl);
@@ -1178,6 +1239,12 @@ index 000000000..67e63e4a5
 +    bool m_active;
 +    ContentType m_contentType;
 +    QString m_statusText;
++
++    // PDF page navigation
++    int m_pdfCurrentPage = 0;
++    int m_pdfTotalPages = 0;
++    QRect m_pdfArrowUpRect;
++    QRect m_pdfArrowDownRect;
 +
 +    // Progressive rendering (PDF + Image)
 +    QString m_pdfFilePath;
