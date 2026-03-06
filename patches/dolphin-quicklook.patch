@@ -1,17 +1,28 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d639f6568..ba44b2a64 100644
+index d639f6568..714cd141f 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -56,6 +56,8 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
-     Widgets
-     Gui
+@@ -58,6 +58,19 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
      DBus
-+    Multimedia
-+    MultimediaWidgets
  )
  
++find_package(Qt6 ${QT_MIN_VERSION} CONFIG QUIET COMPONENTS
++    Multimedia
++    MultimediaWidgets
++)
++if(Qt6Multimedia_FOUND AND Qt6MultimediaWidgets_FOUND)
++    set(HAVE_QTMULTIMEDIA TRUE)
++endif()
++set_package_properties(Qt6Multimedia PROPERTIES
++    DESCRIPTION "Qt Multimedia module"
++    TYPE OPTIONAL
++    PURPOSE "Required for video preview in Quick Look overlay"
++)
++
  if (Qt6Gui_VERSION VERSION_GREATER_EQUAL "6.10.0")
-@@ -113,6 +115,11 @@ if(PackageKitQt6_FOUND)
+     find_package(Qt6GuiPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
+ endif()
+@@ -113,6 +126,17 @@ if(PackageKitQt6_FOUND)
      set(HAVE_PACKAGEKIT TRUE)
  endif()
  
@@ -19,23 +30,42 @@ index d639f6568..ba44b2a64 100644
 +if(PkgConfig_FOUND)
 +    pkg_check_modules(POPPLER_QT6 poppler-qt6)
 +endif()
++set_package_properties(POPPLER_QT6 PROPERTIES
++    DESCRIPTION "Poppler Qt6 PDF rendering library"
++    URL "https://poppler.freedesktop.org/"
++    TYPE OPTIONAL
++    PURPOSE "Required for PDF preview in Quick Look overlay"
++)
 +
  find_package(KF6FileMetaData ${KF6_MIN_VERSION})
  set_package_properties(KF6FileMetaData PROPERTIES
                         URL "https://projects.kde.org/kfilemetadata"
+@@ -136,11 +160,6 @@ set_package_properties(KF6BalooWidgets PROPERTIES DESCRIPTION "Baloos Widgets"
+ if (KF6Baloo_FOUND AND KF6BalooWidgets_FOUND)
+     message(STATUS "Baloo packages are found")
+     set(HAVE_BALOO TRUE)
+-
+-    find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
+-        Multimedia
+-        MultimediaWidgets
+-    )
+ else ()
+     message(WARNING "Baloo packages not found. They are needed for the metadata features of Dolphin (including the information panel).")
+ endif()
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 4faabe9d5..023f0e4d5 100644
+index 4faabe9d5..9d9b0f829 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -111,6 +111,7 @@ target_sources(dolphinprivate PRIVATE
+@@ -111,6 +111,8 @@ target_sources(dolphinprivate PRIVATE
      views/dolphinremoteencoding.cpp
      views/dolphinview.cpp
      views/dolphinviewactionhandler.cpp
 +    views/quicklookoverlay.cpp
++    views/quicklookoverlay.h
      views/draganddrophelper.cpp
      views/versioncontrol/updateitemstatesthread.cpp
      views/versioncontrol/versioncontrolobserver.cpp
-@@ -237,6 +238,14 @@ target_link_libraries(
+@@ -237,6 +239,17 @@ target_link_libraries(
      ${FTS_LIB}
  )
  
@@ -45,13 +75,33 @@ index 4faabe9d5..023f0e4d5 100644
 +    target_link_libraries(dolphinprivate PRIVATE ${POPPLER_QT6_LIBRARIES})
 +endif()
 +
-+target_link_libraries(dolphinprivate PRIVATE Qt6::Multimedia Qt6::MultimediaWidgets)
++if(HAVE_QTMULTIMEDIA)
++    target_compile_definitions(dolphinprivate PRIVATE HAVE_QTMULTIMEDIA)
++    target_link_libraries(dolphinprivate PRIVATE Qt6::Multimedia Qt6::MultimediaWidgets)
++endif()
 +
  if(HAVE_BALOO)
      target_link_libraries(
          dolphinprivate PUBLIC
+@@ -438,10 +451,12 @@ if(HAVE_BALOO)
+         panels/information/dolphin_informationpanelsettings.kcfgc
+     )
+ 
+-    target_link_libraries(dolphinstatic
+-        Qt::Multimedia
+-        Qt::MultimediaWidgets
+-    )
++    if(HAVE_QTMULTIMEDIA)
++        target_link_libraries(dolphinstatic
++            Qt::Multimedia
++            Qt::MultimediaWidgets
++        )
++    endif()
+ endif()
+ 
+ if(HAVE_KUSERFEEDBACK)
 diff --git a/src/views/dolphinview.cpp b/src/views/dolphinview.cpp
-index b01833d69..e6b559ab0 100644
+index b01833d69..0f26d83e8 100644
 --- a/src/views/dolphinview.cpp
 +++ b/src/views/dolphinview.cpp
 @@ -27,6 +27,7 @@
@@ -101,7 +151,7 @@ index b01833d69..e6b559ab0 100644
  
      const KFileItem item = m_model->fileItem(index);
      if (!item.isNull()) {
-+        // Quick Look: intercept supported files and show inline preview
++        /// Quick Look: intercept supported files and show inline preview
 +        const QString mimeType = item.mimetype();
 +        if (m_quickLookOverlay && QuickLookOverlay::isSupportedMimeType(mimeType)) {
 +            m_quickLookOverlay->resize(m_container->size());
@@ -135,10 +185,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..eadfa2034
+index 000000000..412fb853c
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,514 @@
+@@ -0,0 +1,520 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -147,21 +197,22 @@ index 000000000..eadfa2034
 +
 +#include "quicklookoverlay.h"
 +
-+#include <QApplication>
-+#include <QAudioOutput>
 +#include <QImageReader>
 +#include <QKeyEvent>
 +#include <QLabel>
-+#include <QMediaPlayer>
-+#include <QMessageBox>
 +#include <QMimeDatabase>
 +#include <QMouseEvent>
 +#include <QPainter>
 +#include <QPainterPath>
 +#include <QResizeEvent>
 +#include <QTimer>
++
++#ifdef HAVE_QTMULTIMEDIA
++#include <QAudioOutput>
++#include <QMediaPlayer>
 +#include <QVideoFrame>
 +#include <QVideoSink>
++#endif
 +
 +namespace {
 +    constexpr int CornerRadius = 6;
@@ -173,8 +224,10 @@ index 000000000..eadfa2034
 +    constexpr int ContentPadding = 40;
 +    constexpr int BottomExtraSpace = 50;
 +    constexpr int ContentVerticalShift = 20;
++#ifdef HAVE_QTMULTIMEDIA
 +    constexpr int VideoLoadTimeoutMs = 3000;
 +    constexpr qreal DefaultVolume = 0.5;
++#endif
 +}
 +
 +#ifdef HAVE_POPPLER
@@ -186,11 +239,13 @@ index 000000000..eadfa2034
 +    , m_animationProgress(0.0)
 +    , m_active(false)
 +    , m_contentType(ContentType::Image)
++#ifdef HAVE_QTMULTIMEDIA
 +    , m_videoPhase(VideoPhase::Loading)
 +    , m_mediaPlayer(nullptr)
 +    , m_videoSink(nullptr)
 +    , m_audioOutput(nullptr)
 +    , m_videoLoadTimer(nullptr)
++#endif
 +{
 +    setFocusPolicy(Qt::StrongFocus);
 +    hide();
@@ -198,7 +253,9 @@ index 000000000..eadfa2034
 +
 +QuickLookOverlay::~QuickLookOverlay()
 +{
++#ifdef HAVE_QTMULTIMEDIA
 +    cleanupVideo();
++#endif
 +}
 +
 +bool QuickLookOverlay::isSupportedMimeType(const QString &mimeType)
@@ -215,19 +272,13 @@ index 000000000..eadfa2034
 +#endif
 +    }
 +
-+    static const QStringList videoTypes = {
-+        QStringLiteral("video/mp4"),
-+        QStringLiteral("video/x-matroska"),
-+        QStringLiteral("video/webm"),
-+        QStringLiteral("video/avi"),
-+        QStringLiteral("video/x-msvideo"),
-+        QStringLiteral("video/quicktime"),
-+        QStringLiteral("video/ogg"),
-+        QStringLiteral("video/x-flv"),
-+        QStringLiteral("video/3gpp"),
-+        QStringLiteral("video/mpeg"),
-+    };
-+    return videoTypes.contains(mimeType);
++#ifdef HAVE_QTMULTIMEDIA
++    if (mimeType.startsWith(QLatin1String("video/"))) {
++        return true;
++    }
++#endif
++
++    return false;
 +}
 +
 +bool QuickLookOverlay::loadImage(const QString &filePath)
@@ -280,6 +331,7 @@ index 000000000..eadfa2034
 +#endif
 +}
 +
++#ifdef HAVE_QTMULTIMEDIA
 +void QuickLookOverlay::setupVideo(const QUrl &fileUrl)
 +{
 +    cleanupVideo();
@@ -383,6 +435,7 @@ index 000000000..eadfa2034
 +        m_audioOutput = nullptr;
 +    }
 +}
++#endif
 +
 +void QuickLookOverlay::showPreview(const QUrl &fileUrl)
 +{
@@ -391,7 +444,7 @@ index 000000000..eadfa2034
 +    }
 +
 +    const QString filePath = fileUrl.toLocalFile();
-+    static QMimeDatabase mimeDb;
++    QMimeDatabase mimeDb;
 +    const QString mimeType = mimeDb.mimeTypeForFile(filePath).name();
 +
 +    bool loaded = false;
@@ -400,20 +453,17 @@ index 000000000..eadfa2034
 +        loaded = loadImage(filePath);
 +    } else if (mimeType == QLatin1String("application/pdf")) {
 +        loaded = loadPdf(filePath);
-+    } else if (mimeType.startsWith(QLatin1String("video/"))) {
++    }
++#ifdef HAVE_QTMULTIMEDIA
++    else if (mimeType.startsWith(QLatin1String("video/"))) {
 +        m_currentUrl = fileUrl;
 +        m_active = true;
 +        setupVideo(fileUrl);
 +        return;
 +    }
++#endif
 +
 +    if (!loaded) {
-+        if (mimeType == QLatin1String("image/heif") || mimeType == QLatin1String("image/heic")) {
-+            QMessageBox::warning(parentWidget(),
-+                QStringLiteral("HEIF Support"),
-+                QStringLiteral("Cannot open HEIF/HEIC files.\n\n"
-+                    "Please install libheif using your distribution's package manager."));
-+        }
 +        return;
 +    }
 +
@@ -438,6 +488,7 @@ index 000000000..eadfa2034
 +        return;
 +    }
 +
++#ifdef HAVE_QTMULTIMEDIA
 +    if (m_contentType == ContentType::Video) {
 +        // m_pixmap already has the last rendered frame
 +        if (m_mediaPlayer) {
@@ -445,6 +496,7 @@ index 000000000..eadfa2034
 +        }
 +        m_videoPhase = VideoPhase::Closing;
 +    }
++#endif
 +
 +    startHideAnimation();
 +}
@@ -485,13 +537,17 @@ index 000000000..eadfa2034
 +void QuickLookOverlay::onAnimationFinished()
 +{
 +    if (m_animForward) {
++#ifdef HAVE_QTMULTIMEDIA
 +        if (m_contentType == ContentType::Video && m_videoPhase == VideoPhase::Animating && m_mediaPlayer) {
 +            m_videoPhase = VideoPhase::Playing;
 +            m_mediaPlayer->play();
 +        }
++#endif
 +    } else {
 +        m_active = false;
++#ifdef HAVE_QTMULTIMEDIA
 +        cleanupVideo();
++#endif
 +        hide();
 +        Q_EMIT previewClosed();
 +    }
@@ -514,19 +570,19 @@ index 000000000..eadfa2034
 +    painter.setRenderHint(QPainter::Antialiasing);
 +    painter.setRenderHint(QPainter::SmoothPixmapTransform);
 +
-+    const QPalette pal = palette();
-+    QColor bgColor = pal.color(QPalette::Window).darker(300);
-+    QColor shadowColor = pal.color(QPalette::Shadow);
-+    QColor textColor = pal.color(QPalette::BrightText);
-+    QFont labelFont = QApplication::font();
++    // Theme-independent colors: semi-transparent black overlay, white text
++    const QColor bgColor(0, 0, 0, static_cast<int>(BgAlphaMax * m_animationProgress));
++    QColor shadowColor(0, 0, 0);
++    const QColor textColor(255, 255, 255, static_cast<int>(255 * m_animationProgress));
++    QFont labelFont = font();
 +    labelFont.setBold(true);
 +
 +    // Background
-+    bgColor.setAlpha(static_cast<int>(BgAlphaMax * m_animationProgress));
 +    painter.fillRect(rect(), bgColor);
 +
 +    const QRect targetRect = scaledContentRect();
 +
++#ifdef HAVE_QTMULTIMEDIA
 +    // During live video playback — draw frame at full size, no scale animation
 +    if (m_contentType == ContentType::Video && m_videoPhase == VideoPhase::Playing) {
 +        // Drop shadow
@@ -553,6 +609,7 @@ index 000000000..eadfa2034
 +        }
 +        return;
 +    }
++#endif
 +
 +    // Image / PDF / Video thumbnail with scale animation
 +    const QPointF center = QRectF(targetRect).center();
@@ -580,7 +637,6 @@ index 000000000..eadfa2034
 +
 +    // Filename + status
 +    const QString label = m_currentUrl.fileName() + m_statusText;
-+    textColor.setAlpha(static_cast<int>(255 * m_animationProgress));
 +    painter.setPen(textColor);
 +    painter.setFont(labelFont);
 +    const QRect textRect(0, drawRect.bottom() + TextSpacing, width(), TextHeight);
@@ -655,10 +711,10 @@ index 000000000..eadfa2034
 +}
 diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
 new file mode 100644
-index 000000000..349eedac9
+index 000000000..343363e7d
 --- /dev/null
 +++ b/src/views/quicklookoverlay.h
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,107 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -674,10 +730,13 @@ index 000000000..349eedac9
 +#include <QElapsedTimer>
 +
 +class QLabel;
-+class QMediaPlayer;
 +class QTimer;
++
++#ifdef HAVE_QTMULTIMEDIA
++class QMediaPlayer;
 +class QVideoSink;
 +class QAudioOutput;
++#endif
 +
 +class QuickLookOverlay : public QWidget
 +{
@@ -712,12 +771,14 @@ index 000000000..349eedac9
 +        Video,
 +    };
 +
++#ifdef HAVE_QTMULTIMEDIA
 +    enum class VideoPhase {
 +        Loading,
 +        Animating,
 +        Playing,
 +        Closing,
 +    };
++#endif
 +
 +    void startShowAnimation();
 +    void startHideAnimation();
@@ -725,8 +786,11 @@ index 000000000..349eedac9
 +
 +    bool loadImage(const QString &filePath);
 +    bool loadPdf(const QString &filePath);
++
++#ifdef HAVE_QTMULTIMEDIA
 +    void setupVideo(const QUrl &fileUrl);
 +    void cleanupVideo();
++#endif
 +
 +    void advanceAnimation();
 +    void onAnimationFinished();
@@ -747,12 +811,14 @@ index 000000000..349eedac9
 +    qreal m_animStartValue = 0.0;
 +    qreal m_animEndValue = 1.0;
 +
++#ifdef HAVE_QTMULTIMEDIA
 +    // Video playback — rendered via QVideoSink + QPainter (no QVideoWidget)
 +    VideoPhase m_videoPhase;
 +    QMediaPlayer *m_mediaPlayer;
 +    QVideoSink *m_videoSink;
 +    QAudioOutput *m_audioOutput;
 +    QTimer *m_videoLoadTimer;
++#endif
 +};
 +
 +#endif // QUICKLOOKOVERLAY_H
