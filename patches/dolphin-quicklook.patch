@@ -152,7 +152,7 @@ index 000000000..321752de3
 +++ b/src/views/quicklookglrenderer.cpp
 @@ -0,0 +1,570 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -728,7 +728,7 @@ index 000000000..ee67bdc61
 +++ b/src/views/quicklookglrenderer.h
 @@ -0,0 +1,77 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -811,7 +811,7 @@ index 000000000..3823967ef
 +++ b/src/views/quicklookoverlay.cpp
 @@ -0,0 +1,1325 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -2142,7 +2142,7 @@ index 000000000..e72c86874
 +++ b/src/views/quicklookoverlay.h
 @@ -0,0 +1,214 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -2362,7 +2362,7 @@ index 000000000..11ace2486
 +++ b/src/views/quicklookrenderer.h
 @@ -0,0 +1,63 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -2431,7 +2431,7 @@ index 000000000..b62ca8aee
 +++ b/src/views/quicklookswrenderer.cpp
 @@ -0,0 +1,203 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -2640,7 +2640,7 @@ index 000000000..13eab257b
 +++ b/src/views/quicklookswrenderer.h
 @@ -0,0 +1,39 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
