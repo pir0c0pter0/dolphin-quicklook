@@ -1,5 +1,30 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d639f6568..ba44b2a64 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -56,6 +56,8 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
+     Widgets
+     Gui
+     DBus
++    Multimedia
++    MultimediaWidgets
+ )
+ 
+ if (Qt6Gui_VERSION VERSION_GREATER_EQUAL "6.10.0")
+@@ -113,6 +115,11 @@ if(PackageKitQt6_FOUND)
+     set(HAVE_PACKAGEKIT TRUE)
+ endif()
+ 
++find_package(PkgConfig QUIET)
++if(PkgConfig_FOUND)
++    pkg_check_modules(POPPLER_QT6 poppler-qt6)
++endif()
++
+ find_package(KF6FileMetaData ${KF6_MIN_VERSION})
+ set_package_properties(KF6FileMetaData PROPERTIES
+                        URL "https://projects.kde.org/kfilemetadata"
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 4faabe9d5..d0f0ffbc5 100644
+index 4faabe9d5..023f0e4d5 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -111,6 +111,7 @@ target_sources(dolphinprivate PRIVATE
@@ -10,6 +35,21 @@ index 4faabe9d5..d0f0ffbc5 100644
      views/draganddrophelper.cpp
      views/versioncontrol/updateitemstatesthread.cpp
      views/versioncontrol/versioncontrolobserver.cpp
+@@ -237,6 +238,14 @@ target_link_libraries(
+     ${FTS_LIB}
+ )
+ 
++if(POPPLER_QT6_FOUND)
++    target_compile_definitions(dolphinprivate PRIVATE HAVE_POPPLER)
++    target_include_directories(dolphinprivate PRIVATE ${POPPLER_QT6_INCLUDE_DIRS})
++    target_link_libraries(dolphinprivate PRIVATE ${POPPLER_QT6_LIBRARIES})
++endif()
++
++target_link_libraries(dolphinprivate PRIVATE Qt6::Multimedia Qt6::MultimediaWidgets)
++
+ if(HAVE_BALOO)
+     target_link_libraries(
+         dolphinprivate PUBLIC
 diff --git a/src/views/dolphinview.cpp b/src/views/dolphinview.cpp
 index b01833d69..295529c28 100644
 --- a/src/views/dolphinview.cpp
@@ -82,10 +122,10 @@ index e3f83979c..3dbeaa60d 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..5281f1738
+index 000000000..55bff4360
 --- /dev/null
 +++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,433 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -94,22 +134,33 @@ index 000000000..5281f1738
 +
 +#include "quicklookoverlay.h"
 +
++#include <QAudioOutput>
 +#include <QEasingCurve>
 +#include <QImageReader>
 +#include <QKeyEvent>
 +#include <QLabel>
++#include <QMediaPlayer>
 +#include <QMimeDatabase>
 +#include <QMouseEvent>
 +#include <QPainter>
 +#include <QPainterPath>
 +#include <QPropertyAnimation>
 +#include <QResizeEvent>
++#include <QVideoWidget>
++
++#ifdef HAVE_POPPLER
++#include <poppler-qt6.h>
++#endif
 +
 +QuickLookOverlay::QuickLookOverlay(QWidget *parent)
 +    : QWidget(parent)
 +    , m_animationProgress(0.0)
 +    , m_active(false)
++    , m_contentType(ContentType::Image)
 +    , m_animation(new QPropertyAnimation(this, "animationProgress", this))
++    , m_mediaPlayer(nullptr)
++    , m_videoWidget(nullptr)
++    , m_audioOutput(nullptr)
 +{
 +    setFocusPolicy(Qt::StrongFocus);
 +    hide();
@@ -118,22 +169,170 @@ index 000000000..5281f1738
 +    m_animation->setEasingCurve(QEasingCurve::OutCubic);
 +}
 +
-+QuickLookOverlay::~QuickLookOverlay() = default;
++QuickLookOverlay::~QuickLookOverlay()
++{
++    cleanupVideo();
++}
 +
 +bool QuickLookOverlay::isSupportedMimeType(const QString &mimeType)
 +{
-+    static const QStringList supported = {
-+        QStringLiteral("image/png"),
-+        QStringLiteral("image/jpeg"),
-+        QStringLiteral("image/gif"),
-+        QStringLiteral("image/bmp"),
-+        QStringLiteral("image/webp"),
-+        QStringLiteral("image/svg+xml"),
-+        QStringLiteral("image/svg+xml-compressed"),
-+        QStringLiteral("image/tiff"),
-+        QStringLiteral("image/x-icon"),
++    // Images
++    if (mimeType.startsWith(QLatin1String("image/"))) {
++        return true;
++    }
++
++    // PDF
++    if (mimeType == QLatin1String("application/pdf")) {
++#ifdef HAVE_POPPLER
++        return true;
++#else
++        return false;
++#endif
++    }
++
++    // Video
++    static const QStringList videoTypes = {
++        QStringLiteral("video/mp4"),
++        QStringLiteral("video/x-matroska"),
++        QStringLiteral("video/webm"),
++        QStringLiteral("video/avi"),
++        QStringLiteral("video/x-msvideo"),
++        QStringLiteral("video/quicktime"),
++        QStringLiteral("video/ogg"),
++        QStringLiteral("video/x-flv"),
++        QStringLiteral("video/3gpp"),
++        QStringLiteral("video/mpeg"),
 +    };
-+    return supported.contains(mimeType);
++    if (videoTypes.contains(mimeType)) {
++        return true;
++    }
++
++    return false;
++}
++
++bool QuickLookOverlay::loadImage(const QString &filePath)
++{
++    QImageReader reader(filePath);
++    reader.setAutoTransform(true);
++    const QImage image = reader.read();
++    if (image.isNull()) {
++        return false;
++    }
++    m_pixmap = QPixmap::fromImage(image);
++    m_contentType = ContentType::Image;
++    m_statusText.clear();
++    return true;
++}
++
++bool QuickLookOverlay::loadPdf(const QString &filePath)
++{
++#ifdef HAVE_POPPLER
++    auto document = Poppler::Document::load(filePath);
++    if (!document) {
++        return false;
++    }
++
++    document->setRenderHint(Poppler::Document::Antialiasing);
++    document->setRenderHint(Poppler::Document::TextAntialiasing);
++
++    auto page = document->page(0);
++    if (!page) {
++        return false;
++    }
++
++    // Render at 2x for crisp display
++    const QImage image = page->renderToImage(144, 144);
++    if (image.isNull()) {
++        return false;
++    }
++
++    m_pixmap = QPixmap::fromImage(image);
++    m_contentType = ContentType::Pdf;
++
++    const int totalPages = document->numPages();
++    m_statusText = (totalPages > 1)
++        ? QStringLiteral(" — %1 pages").arg(totalPages)
++        : QStringLiteral(" — 1 page");
++
++    return true;
++#else
++    Q_UNUSED(filePath)
++    return false;
++#endif
++}
++
++void QuickLookOverlay::setupVideo(const QUrl &fileUrl)
++{
++    cleanupVideo();
++
++    m_contentType = ContentType::Video;
++    m_pixmap = QPixmap(); // no static pixmap for video
++    m_statusText.clear();
++
++    m_audioOutput = new QAudioOutput(this);
++    m_audioOutput->setVolume(0.5);
++
++    m_mediaPlayer = new QMediaPlayer(this);
++    m_mediaPlayer->setAudioOutput(m_audioOutput);
++
++    m_videoWidget = new QVideoWidget(this);
++    m_videoWidget->setStyleSheet(QStringLiteral("background: transparent;"));
++    m_mediaPlayer->setVideoOutput(m_videoWidget);
++
++    m_mediaPlayer->setSource(fileUrl);
++    m_mediaPlayer->setLoops(QMediaPlayer::Infinite);
++
++    // Hide initially — will be shown during animation
++    m_videoWidget->hide();
++
++    connect(m_mediaPlayer, &QMediaPlayer::mediaStatusChanged, this, [this](QMediaPlayer::MediaStatus status) {
++        if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::BufferedMedia) {
++            m_mediaPlayer->play();
++            updateVideoGeometry();
++            m_videoWidget->show();
++            m_videoWidget->raise();
++        }
++    });
++}
++
++void QuickLookOverlay::cleanupVideo()
++{
++    if (m_mediaPlayer) {
++        m_mediaPlayer->stop();
++        delete m_mediaPlayer;
++        m_mediaPlayer = nullptr;
++    }
++    if (m_videoWidget) {
++        delete m_videoWidget;
++        m_videoWidget = nullptr;
++    }
++    if (m_audioOutput) {
++        delete m_audioOutput;
++        m_audioOutput = nullptr;
++    }
++}
++
++void QuickLookOverlay::updateVideoGeometry()
++{
++    if (!m_videoWidget) {
++        return;
++    }
++
++    const QRect targetRect = scaledContentRect();
++    const QPointF center = QRectF(targetRect).center();
++    const qreal scale = 0.3 + 0.7 * m_animationProgress;
++    const qreal w = targetRect.width() * scale;
++    const qreal h = targetRect.height() * scale;
++    const QRect videoRect(
++        static_cast<int>(center.x() - w / 2.0),
++        static_cast<int>(center.y() - h / 2.0),
++        static_cast<int>(w),
++        static_cast<int>(h)
++    );
++    m_videoWidget->setGeometry(videoRect);
++
++    const int alpha = static_cast<int>(255 * m_animationProgress);
++    m_videoWidget->setVisible(alpha > 10);
 +}
 +
 +void QuickLookOverlay::showPreview(const QUrl &fileUrl)
@@ -143,14 +342,24 @@ index 000000000..5281f1738
 +    }
 +
 +    const QString filePath = fileUrl.toLocalFile();
-+    QImageReader reader(filePath);
-+    reader.setAutoTransform(true);
-+    const QImage image = reader.read();
-+    if (image.isNull()) {
++    QMimeDatabase mimeDb;
++    const QString mimeType = mimeDb.mimeTypeForFile(filePath).name();
++
++    bool loaded = false;
++
++    if (mimeType.startsWith(QLatin1String("image/"))) {
++        loaded = loadImage(filePath);
++    } else if (mimeType == QLatin1String("application/pdf")) {
++        loaded = loadPdf(filePath);
++    } else if (mimeType.startsWith(QLatin1String("video/"))) {
++        setupVideo(fileUrl);
++        loaded = true;
++    }
++
++    if (!loaded) {
 +        return;
 +    }
 +
-+    m_pixmap = QPixmap::fromImage(image);
 +    m_currentUrl = fileUrl;
 +    m_active = true;
 +
@@ -166,6 +375,9 @@ index 000000000..5281f1738
 +{
 +    if (!m_active) {
 +        return;
++    }
++    if (m_mediaPlayer) {
++        m_mediaPlayer->pause();
 +    }
 +    startHideAnimation();
 +}
@@ -185,8 +397,13 @@ index 000000000..5281f1738
 +    m_animationProgress = progress;
 +    update();
 +
++    if (m_contentType == ContentType::Video) {
++        updateVideoGeometry();
++    }
++
 +    if (progress <= 0.0 && m_animation->direction() == QAbstractAnimation::Backward) {
 +        m_active = false;
++        cleanupVideo();
 +        hide();
 +        Q_EMIT previewClosed();
 +    }
@@ -196,10 +413,6 @@ index 000000000..5281f1738
 +{
 +    Q_UNUSED(event)
 +
-+    if (m_pixmap.isNull()) {
-+        return;
-+    }
-+
 +    QPainter painter(this);
 +    painter.setRenderHint(QPainter::Antialiasing);
 +    painter.setRenderHint(QPainter::SmoothPixmapTransform);
@@ -208,10 +421,44 @@ index 000000000..5281f1738
 +    const int bgAlpha = static_cast<int>(180 * m_animationProgress);
 +    painter.fillRect(rect(), QColor(0, 0, 0, bgAlpha));
 +
-+    // Calculate target image rect (fit to widget, with padding)
-+    const QRect targetRect = scaledImageRect();
++    if (m_contentType == ContentType::Video) {
++        // Video widget handles its own rendering; just draw filename
++        const QRect targetRect = scaledContentRect();
++        const QPointF center = QRectF(targetRect).center();
++        const qreal scale = 0.3 + 0.7 * m_animationProgress;
++        const qreal h = targetRect.height() * scale;
++        const qreal drawBottom = center.y() + h / 2.0;
 +
-+    // Animate from center point to full size
++        // Drop shadow for video area
++        if (m_videoWidget && m_videoWidget->isVisible()) {
++            const int shadowOffset = static_cast<int>(4 * m_animationProgress);
++            const int shadowAlpha = static_cast<int>(80 * m_animationProgress);
++            QRectF shadowRect = QRectF(m_videoWidget->geometry()).adjusted(shadowOffset, shadowOffset, shadowOffset, shadowOffset);
++            painter.setPen(Qt::NoPen);
++            painter.setBrush(QColor(0, 0, 0, shadowAlpha));
++            painter.drawRoundedRect(shadowRect, 6, 6);
++        }
++
++        // Filename
++        const QString filename = m_currentUrl.fileName();
++        const int textAlpha = static_cast<int>(255 * m_animationProgress);
++        painter.setPen(QColor(255, 255, 255, textAlpha));
++        QFont font = painter.font();
++        font.setPointSize(11);
++        font.setBold(true);
++        painter.setFont(font);
++
++        const QRect textRect(0, static_cast<int>(drawBottom) + 12, width(), 30);
++        painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, filename);
++        return;
++    }
++
++    // Image / PDF rendering
++    if (m_pixmap.isNull()) {
++        return;
++    }
++
++    const QRect targetRect = scaledContentRect();
 +    const QPointF center = QRectF(targetRect).center();
 +    const qreal scale = 0.3 + 0.7 * m_animationProgress;
 +    const qreal w = targetRect.width() * scale;
@@ -226,15 +473,15 @@ index 000000000..5281f1738
 +    painter.setBrush(QColor(0, 0, 0, shadowAlpha));
 +    painter.drawRoundedRect(shadowRect, 6, 6);
 +
-+    // Image with rounded corners
++    // Content with rounded corners
 +    QPainterPath clipPath;
 +    clipPath.addRoundedRect(drawRect, 6, 6);
 +    painter.setClipPath(clipPath);
 +    painter.drawPixmap(drawRect.toRect(), m_pixmap);
 +    painter.setClipping(false);
 +
-+    // Filename at the bottom
-+    const QString filename = m_currentUrl.fileName();
++    // Filename + status text at the bottom
++    const QString label = m_currentUrl.fileName() + m_statusText;
 +    const int textAlpha = static_cast<int>(255 * m_animationProgress);
 +    painter.setPen(QColor(255, 255, 255, textAlpha));
 +    QFont font = painter.font();
@@ -243,7 +490,7 @@ index 000000000..5281f1738
 +    painter.setFont(font);
 +
 +    const QRect textRect(0, drawRect.bottom() + 12, width(), 30);
-+    painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, filename);
++    painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, label);
 +}
 +
 +void QuickLookOverlay::mouseDoubleClickEvent(QMouseEvent *event)
@@ -265,6 +512,9 @@ index 000000000..5281f1738
 +void QuickLookOverlay::resizeEvent(QResizeEvent *event)
 +{
 +    QWidget::resizeEvent(event);
++    if (m_contentType == ContentType::Video) {
++        updateVideoGeometry();
++    }
 +    update();
 +}
 +
@@ -286,30 +536,35 @@ index 000000000..5281f1738
 +    m_animation->start();
 +}
 +
-+QRect QuickLookOverlay::scaledImageRect() const
++QRect QuickLookOverlay::scaledContentRect() const
 +{
-+    if (m_pixmap.isNull()) {
++    const int padding = 40;
++    const int maxW = width() - 2 * padding;
++    const int maxH = height() - 2 * padding - 50;
++
++    QSize contentSize;
++    if (m_contentType == ContentType::Video) {
++        // Default 16:9 aspect ratio for video
++        contentSize = QSize(1280, 720);
++    } else if (!m_pixmap.isNull()) {
++        contentSize = m_pixmap.size();
++    } else {
 +        return {};
 +    }
 +
-+    const int padding = 40;
-+    const int maxW = width() - 2 * padding;
-+    const int maxH = height() - 2 * padding - 50; // extra space for filename
++    contentSize.scale(maxW, maxH, Qt::KeepAspectRatio);
 +
-+    QSize imgSize = m_pixmap.size();
-+    imgSize.scale(maxW, maxH, Qt::KeepAspectRatio);
++    const int x = (width() - contentSize.width()) / 2;
++    const int y = (height() - contentSize.height()) / 2 - 20;
 +
-+    const int x = (width() - imgSize.width()) / 2;
-+    const int y = (height() - imgSize.height()) / 2 - 20;
-+
-+    return {x, y, imgSize.width(), imgSize.height()};
++    return {x, y, contentSize.width(), contentSize.height()};
 +}
 diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
 new file mode 100644
-index 000000000..a6fd36de4
+index 000000000..19e52722c
 --- /dev/null
 +++ b/src/views/quicklookoverlay.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,83 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -324,12 +579,15 @@ index 000000000..a6fd36de4
 +
 +class QLabel;
 +class QPropertyAnimation;
++class QMediaPlayer;
++class QVideoWidget;
++class QAudioOutput;
 +
 +/**
-+ * @brief Overlay widget that provides inline Quick Look preview for image files.
++ * @brief Overlay widget that provides inline Quick Look preview for files.
 + *
-+ * Displays an image preview with zoom-in/zoom-out animation within the
-+ * Dolphin file list container area. Double-clicking the preview dismisses it.
++ * Supports image, PDF, and video files. Displays a preview with zoom-in/zoom-out
++ * animation within the Dolphin file list container area.
 + */
 +class QuickLookOverlay : public QWidget
 +{
@@ -340,24 +598,9 @@ index 000000000..a6fd36de4
 +    explicit QuickLookOverlay(QWidget *parent = nullptr);
 +    ~QuickLookOverlay() override;
 +
-+    /**
-+     * Shows the preview for the given image file URL with a zoom-in animation.
-+     */
 +    void showPreview(const QUrl &fileUrl);
-+
-+    /**
-+     * Hides the preview with a zoom-out animation.
-+     */
 +    void hidePreview();
-+
-+    /**
-+     * @return true if the overlay is currently visible or animating.
-+     */
 +    bool isPreviewActive() const;
-+
-+    /**
-+     * @return true if the given MIME type is supported for preview.
-+     */
 +    static bool isSupportedMimeType(const QString &mimeType);
 +
 +    qreal animationProgress() const;
@@ -373,16 +616,35 @@ index 000000000..a6fd36de4
 +    void resizeEvent(QResizeEvent *event) override;
 +
 +private:
++    enum class ContentType {
++        Image,
++        Pdf,
++        Video,
++    };
++
 +    void startShowAnimation();
 +    void startHideAnimation();
-+    QRect scaledImageRect() const;
++    QRect scaledContentRect() const;
++
++    bool loadImage(const QString &filePath);
++    bool loadPdf(const QString &filePath);
++    void setupVideo(const QUrl &fileUrl);
++    void cleanupVideo();
++    void updateVideoGeometry();
 +
 +    QPixmap m_pixmap;
 +    QUrl m_currentUrl;
 +    qreal m_animationProgress;
 +    bool m_active;
++    ContentType m_contentType;
++    QString m_statusText;
 +
 +    QPropertyAnimation *m_animation;
++
++    // Video playback
++    QMediaPlayer *m_mediaPlayer;
++    QVideoWidget *m_videoWidget;
++    QAudioOutput *m_audioOutput;
 +};
 +
 +#endif // QUICKLOOKOVERLAY_H
