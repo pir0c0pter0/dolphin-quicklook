@@ -327,6 +327,6 @@ GPL-2.0-or-later -- same as KDE Dolphin.
 
 ## Credits
 
-Built by [@pir0c0pter0](https://github.com/pir0c0pter0) as a native KDE contribution.
+Built by [@pir0c0pter0](https://github.com/pir0c0pter0) (pir0c0pter0000@gmail.com) as a native KDE contribution.
 
 Powered by KDE Frameworks 6, Qt 6, and a desire for better file previews on Linux.
