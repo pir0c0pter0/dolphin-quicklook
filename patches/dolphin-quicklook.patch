@@ -1,16 +1,16 @@
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 4faabe9d5..09d66c790 100644
+index 4faabe9d5..cd0cb5804 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -111,6 +111,11 @@ target_sources(dolphinprivate PRIVATE
      views/dolphinremoteencoding.cpp
      views/dolphinview.cpp
      views/dolphinviewactionhandler.cpp
-+    views/quicklookoverlay.cpp
-+    views/quicklookoverlay.h
-+    views/quicklookpdfhandler.cpp
-+    views/quicklookconstants.h
-+    views/quicklookpdfhandler.h
++    views/quicklook/quicklookoverlay.cpp
++    views/quicklook/quicklookoverlay.h
++    views/quicklook/quicklookpdfhandler.cpp
++    views/quicklook/quicklookconstants.h
++    views/quicklook/quicklookpdfhandler.h
      views/draganddrophelper.cpp
      views/versioncontrol/updateitemstatesthread.cpp
      views/versioncontrol/versioncontrolobserver.cpp
@@ -26,8 +26,8 @@ index 4faabe9d5..09d66c790 100644
 +
 +if(HAVE_QTMULTIMEDIA)
 +    target_sources(dolphinprivate PRIVATE
-+        views/quicklookmediahandler.cpp
-+        views/quicklookmediahandler.h
++        views/quicklook/quicklookmediahandler.cpp
++        views/quicklook/quicklookmediahandler.h
 +    )
 +    target_compile_definitions(dolphinprivate PRIVATE HAVE_QTMULTIMEDIA)
 +    target_link_libraries(dolphinprivate PRIVATE Qt6::Multimedia Qt6::MultimediaWidgets)
@@ -54,14 +54,14 @@ index 4faabe9d5..09d66c790 100644
  
  if(HAVE_KUSERFEEDBACK)
 diff --git a/src/views/dolphinview.cpp b/src/views/dolphinview.cpp
-index b01833d69..aa41cb6c4 100644
+index b01833d69..5b75cc938 100644
 --- a/src/views/dolphinview.cpp
 +++ b/src/views/dolphinview.cpp
 @@ -22,6 +22,7 @@
  #include "kitemviews/kitemlistheader.h"
  #include "kitemviews/kitemlistselectionmanager.h"
  #include "kitemviews/private/kitemlistroleeditor.h"
-+#include "quicklookoverlay.h"
++#include "quicklook/quicklookoverlay.h"
  #include "selectionmode/singleclickselectionproxystyle.h"
  #include "settings/viewmodes/viewmodesettings.h"
  #include "versioncontrol/versioncontrolobserver.h"
@@ -73,7 +73,7 @@ index b01833d69..aa41cb6c4 100644
  {
      m_topLayout = new QVBoxLayout(this);
      m_topLayout->setSpacing(0);
-@@ -252,6 +254,13 @@ DolphinView::DolphinView(const QUrl &url, QWidget *parent)
+@@ -252,6 +254,21 @@ DolphinView::DolphinView(const QUrl &url, QWidget *parent)
      applyViewProperties();
      m_topLayout->addWidget(m_container);
  
@@ -84,10 +84,43 @@ index b01833d69..aa41cb6c4 100644
 +        m_container->setFocus();
 +    });
 +
++    m_quickLookPrimeTimer = new QTimer(this);
++    m_quickLookPrimeTimer->setSingleShot(true);
++    // Allow 2 seconds between Space press and double-click to activate Quick Look
++    m_quickLookPrimeTimer->setInterval(2000);
++    connect(m_quickLookPrimeTimer, &QTimer::timeout, this, [this]() {
++        m_quickLookPrimed = false;
++    });
++
      loadDirectory(url);
  }
  
-@@ -1045,6 +1054,12 @@ bool DolphinView::eventFilter(QObject *watched, QEvent *event)
+@@ -1005,16 +1022,22 @@ bool DolphinView::eventFilter(QObject *watched, QEvent *event)
+         updatePalette();
+         break;
+ 
+-    case QEvent::KeyPress:
++    case QEvent::KeyPress: {
+         hideToolTip(ToolTipManager::HideBehavior::Instantly);
++        QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
+         if (GeneralSettings::useTabForSwitchingSplitView()) {
+-            QKeyEvent *keyEvent = static_cast<QKeyEvent *>(event);
+             if (keyEvent->key() == Qt::Key_Tab && keyEvent->modifiers() == Qt::NoModifier) {
+                 Q_EMIT toggleActiveViewRequested();
+                 return true;
+             }
+         }
++        // Quick Look: prime on Space press (for Space+double-click activation mode)
++        if (keyEvent->key() == Qt::Key_Space && watched == m_container && !keyEvent->isAutoRepeat() && !m_quickLookOverlay->isPreviewActive()) {
++            m_quickLookPrimed = true;
++            m_quickLookPrimeTimer->start();
++        }
+         break;
++    }
+     case QEvent::KeyRelease:
+         if (static_cast<QKeyEvent *>(event)->key() == Qt::Key_Control) {
+             m_controlWheelAccumulatedDelta = 0;
+@@ -1045,6 +1068,12 @@ bool DolphinView::eventFilter(QObject *watched, QEvent *event)
          }
          break;
  
@@ -100,13 +133,17 @@ index b01833d69..aa41cb6c4 100644
      case QEvent::ToolTip: {
          const auto helpEvent = static_cast<QHelpEvent *>(event);
          if (tryShowNameToolTip(helpEvent)) {
-@@ -1127,6 +1142,14 @@ void DolphinView::slotItemActivated(int index)
+@@ -1127,6 +1156,18 @@ void DolphinView::slotItemActivated(int index)
  
      const KFileItem item = m_model->fileItem(index);
      if (!item.isNull()) {
 +        /// Quick Look: intercept supported files and show inline preview
 +        const QString mimeType = item.mimetype();
-+        if (m_quickLookOverlay && QuickLookOverlay::isSupportedMimeType(mimeType)) {
++        const bool quickLookAllowed =
++            (GeneralSettings::quickLookActivation() == GeneralSettings::EnumQuickLookActivation::DoubleClickOnly) || m_quickLookPrimed;
++        if (quickLookAllowed && m_quickLookOverlay && QuickLookOverlay::isSupportedMimeType(mimeType)) {
++            m_quickLookPrimed = false;
++            m_quickLookPrimeTimer->stop();
 +            m_quickLookOverlay->resize(m_container->size());
 +            if (m_quickLookOverlay->showPreview(item.url())) {
 +                return;
@@ -116,7 +153,7 @@ index b01833d69..aa41cb6c4 100644
      }
  }
 diff --git a/src/views/dolphinview.h b/src/views/dolphinview.h
-index e3f83979c..3dbeaa60d 100644
+index e3f83979c..1941bc18e 100644
 --- a/src/views/dolphinview.h
 +++ b/src/views/dolphinview.h
 @@ -40,6 +40,7 @@ class QGraphicsSceneDragDropEvent;
@@ -127,21 +164,23 @@ index e3f83979c..3dbeaa60d 100644
  
  /**
   * @short Represents a view for the directory content.
-@@ -1029,6 +1030,9 @@ private:
+@@ -1029,6 +1030,11 @@ private:
      /// Hash table of user-preferred sort orders for each role
      QHash<QByteArray, Qt::SortOrder> m_rolesSortOrder;
  
 +    /// Quick Look overlay for inline image preview
 +    QuickLookOverlay *m_quickLookOverlay;
++    bool m_quickLookPrimed = false;
++    QTimer *m_quickLookPrimeTimer = nullptr;
 +
      // For unit tests
      friend class TestBase;
      friend class DolphinDetailsViewTest;
-diff --git a/src/views/quicklookconstants.h b/src/views/quicklookconstants.h
+diff --git a/src/views/quicklook/quicklookconstants.h b/src/views/quicklook/quicklookconstants.h
 new file mode 100644
 index 000000000..b086e5ef1
 --- /dev/null
-+++ b/src/views/quicklookconstants.h
++++ b/src/views/quicklook/quicklookconstants.h
 @@ -0,0 +1,16 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
@@ -159,12 +198,12 @@ index 000000000..b086e5ef1
 +}
 +
 +#endif // QUICKLOOKCONSTANTS_H
-diff --git a/src/views/quicklookmediahandler.cpp b/src/views/quicklookmediahandler.cpp
+diff --git a/src/views/quicklook/quicklookmediahandler.cpp b/src/views/quicklook/quicklookmediahandler.cpp
 new file mode 100644
-index 000000000..1617a13d3
+index 000000000..783b19b7c
 --- /dev/null
-+++ b/src/views/quicklookmediahandler.cpp
-@@ -0,0 +1,557 @@
++++ b/src/views/quicklook/quicklookmediahandler.cpp
+@@ -0,0 +1,600 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -507,6 +546,7 @@ index 000000000..1617a13d3
 +        m_audioOutput->deleteLater();
 +        m_audioOutput = nullptr;
 +    }
++    m_videoFramePending = false;
 +}
 +
 +void QuickLookMediaHandler::cleanupAudio()
@@ -533,7 +573,9 @@ index 000000000..1617a13d3
 +    m_audioSamples.clear();
 +    m_audioSamples.squeeze();
 +    m_audioFrame = QImage();
++    m_vinylImage = QImage();
 +    m_smoothedSpectrum.clear();
++    m_smoothedSpectrum.squeeze();
 +    m_audioDecodingDone = false;
 +}
 +
@@ -672,6 +714,33 @@ index 000000000..1617a13d3
 +    Q_EMIT contentReady(m_audioFrame);
 +}
 +
++void QuickLookMediaHandler::setVideoDisplaySize(const QSize &size)
++{
++    m_videoDisplaySize = size;
++}
++
++void QuickLookMediaHandler::markFrameConsumed()
++{
++    m_videoFramePending = false;
++}
++
++qint64 QuickLookMediaHandler::position() const
++{
++    return m_mediaPlayer ? m_mediaPlayer->position() : 0;
++}
++
++qint64 QuickLookMediaHandler::duration() const
++{
++    return m_mediaPlayer ? m_mediaPlayer->duration() : 0;
++}
++
++void QuickLookMediaHandler::seek(qint64 positionMs)
++{
++    if (m_mediaPlayer) {
++        m_mediaPlayer->setPosition(positionMs);
++    }
++}
++
 +void QuickLookMediaHandler::onVideoFrameChanged(const QVideoFrame &frame)
 +{
 +    QVideoFrame f = frame;
@@ -679,9 +748,21 @@ index 000000000..1617a13d3
 +        return;
 +    }
 +
-+    const QImage image = f.toImage();
++    // During playback, skip this frame if the previous one hasn't been painted yet
++    if (m_phase == Phase::Playing && m_videoFramePending) {
++        return;
++    }
++
++    QImage image = f.toImage();
 +    if (image.isNull()) {
 +        return;
++    }
++
++    // Downscale to display size — no point processing 4K pixels we won't show
++    const int maxW = m_videoDisplaySize.isValid() ? m_videoDisplaySize.width() : VideoMaxDisplayWidth;
++    const int maxH = m_videoDisplaySize.isValid() ? m_videoDisplaySize.height() : VideoMaxDisplayHeight;
++    if (image.width() > maxW || image.height() > maxH) {
++        image = image.scaled(maxW, maxH, Qt::KeepAspectRatio, Qt::FastTransformation);
 +    }
 +
 +    if (m_phase == Phase::Loading) {
@@ -697,6 +778,7 @@ index 000000000..1617a13d3
 +    }
 +
 +    if (m_phase == Phase::Playing) {
++        m_videoFramePending = true;
 +        Q_EMIT contentReady(image);
 +    }
 +}
@@ -722,12 +804,12 @@ index 000000000..1617a13d3
 +
 +    Q_EMIT statusTextChanged(QStringLiteral(" — %1 / %2").arg(formatTime(curSec), formatTime(durSec)));
 +}
-diff --git a/src/views/quicklookmediahandler.h b/src/views/quicklookmediahandler.h
+diff --git a/src/views/quicklook/quicklookmediahandler.h b/src/views/quicklook/quicklookmediahandler.h
 new file mode 100644
-index 000000000..2a513e24f
+index 000000000..95f25c612
 --- /dev/null
-+++ b/src/views/quicklookmediahandler.h
-@@ -0,0 +1,103 @@
++++ b/src/views/quicklook/quicklookmediahandler.h
+@@ -0,0 +1,116 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -739,6 +821,7 @@ index 000000000..2a513e24f
 +
 +#include <QImage>
 +#include <QObject>
++#include <QSize>
 +#include <QUrl>
 +#include <QVector>
 +
@@ -781,6 +864,12 @@ index 000000000..2a513e24f
 +    ContentType contentType() const;
 +    Phase phase() const;
 +    bool isPlaying() const;
++    void setVideoDisplaySize(const QSize &size);
++    void markFrameConsumed();
++
++    qint64 position() const;
++    qint64 duration() const;
++    void seek(qint64 positionMs);
 +
 +Q_SIGNALS:
 +    void contentReady(const QImage &image);
@@ -790,8 +879,10 @@ index 000000000..2a513e24f
 +    void requestUpdate();
 +
 +private:
-+    static constexpr int VideoLoadTimeoutMs = 3000;
++    static constexpr int VideoLoadTimeoutMs = 5000;
 +    static constexpr qreal DefaultVolume = 0.5;
++    static constexpr int VideoMaxDisplayWidth = 1920;
++    static constexpr int VideoMaxDisplayHeight = 1080;
 +    static constexpr int AudioComposeSize = 800;
 +    static constexpr qreal VinylDegreesPerFrame = 33.0 * 360.0 / 60.0 / 30.0;
 +    static constexpr int AudioFrameIntervalMs = 33;
@@ -828,15 +919,19 @@ index 000000000..2a513e24f
 +    int m_audioSampleRate = 44100;
 +    bool m_audioDecodingDone = false;
 +    QVector<float> m_smoothedSpectrum;
++
++    // Video frame throttling
++    bool m_videoFramePending = false;
++    QSize m_videoDisplaySize;
 +};
 +
 +#endif // QUICKLOOKMEDIAHANDLER_H
-diff --git a/src/views/quicklookoverlay.cpp b/src/views/quicklookoverlay.cpp
+diff --git a/src/views/quicklook/quicklookoverlay.cpp b/src/views/quicklook/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..adf5c212d
+index 000000000..69c65140b
 --- /dev/null
-+++ b/src/views/quicklookoverlay.cpp
-@@ -0,0 +1,971 @@
++++ b/src/views/quicklook/quicklookoverlay.cpp
+@@ -0,0 +1,1076 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -902,6 +997,16 @@ index 000000000..adf5c212d
 +constexpr int PdfArrowBgAlpha = 40;
 +constexpr int PdfArrowBtnRadius = 8;
 +constexpr int PdfArrowInnerPad = 10;
++constexpr int ProgressBarHeight = 4;
++constexpr int ProgressBarHoverHeight = 6;
++constexpr int ProgressBarBottomMargin = 12;
++constexpr int ProgressBarSideMargin = 16;
++constexpr int ProgressTimeFontSize = 10;
++constexpr int ProgressTimeMargin = 6;
++constexpr int ProgressBarRadius = 2;
++constexpr int ProgressBarBgAlpha = 100;
++constexpr int ProgressBarFillAlpha = 230;
++constexpr int ProgressBarHitPadding = 8;
 +}
 +
 +QuickLookOverlay::QuickLookOverlay(QWidget *parent)
@@ -938,6 +1043,7 @@ index 000000000..adf5c212d
 +    connect(m_mediaHandler, &QuickLookMediaHandler::contentReady, this, [this](const QImage &image) {
 +        setContentImage(image);
 +        updatePixmap();
++        m_mediaHandler->markFrameConsumed();
 +        update();
 +    });
 +    connect(m_mediaHandler, &QuickLookMediaHandler::readyToAnimate, this, [this](const QImage &firstFrame) {
@@ -1081,6 +1187,10 @@ index 000000000..adf5c212d
 +    if (m_animating && !m_animForward) {
 +        m_animating = false;
 +        m_contentImage = QImage();
++        m_pixmap = QPixmap();
++        m_crossfadeOldPixmap = QPixmap();
++        m_crossfadeOldImage = QImage();
++        m_hiResLowResImage = QImage();
 +#ifdef HAVE_POPPLER
 +        m_pdfHandler->cleanup();
 +#endif
@@ -1166,6 +1276,9 @@ index 000000000..adf5c212d
 +    resetZoom();
 +
 +    if (type == ContentType::Video) {
++        if (parentWidget()) {
++            m_mediaHandler->setVideoDisplaySize(parentWidget()->size());
++        }
 +        m_mediaHandler->setupVideo(fileUrl);
 +    } else {
 +        m_mediaHandler->setupAudio(fileUrl);
@@ -1265,6 +1378,10 @@ index 000000000..adf5c212d
 +        m_hiResRenderTimer->stop();
 +
 +        m_contentImage = QImage();
++        m_pixmap = QPixmap();
++        m_crossfadeOldPixmap = QPixmap();
++        m_crossfadeOldImage = QImage();
++        m_hiResLowResImage = QImage();
 +#ifdef HAVE_POPPLER
 +        m_pdfHandler->cleanup();
 +#endif
@@ -1510,6 +1627,70 @@ index 000000000..adf5c212d
 +#endif
 +}
 +
++void QuickLookOverlay::drawVideoProgressBar(QPainter &painter, const QRectF &contentRect)
++{
++#ifdef HAVE_QTMULTIMEDIA
++    if (m_contentType != ContentType::Video || !m_mediaHandler || !m_mediaHandler->isPlaying()) {
++        return;
++    }
++
++    const qint64 dur = m_mediaHandler->duration();
++    if (dur <= 0) {
++        return;
++    }
++
++    const qint64 pos = m_mediaHandler->position();
++    const qreal progress = static_cast<qreal>(pos) / dur;
++
++    // Format time strings
++    auto formatTime = [](qint64 totalMs) -> QString {
++        const qint64 totalSec = totalMs / 1000;
++        const qint64 h = totalSec / 3600;
++        const qint64 m = (totalSec % 3600) / 60;
++        const qint64 s = totalSec % 60;
++        if (h > 0) {
++            return QStringLiteral("%1:%2:%3").arg(h).arg(m, 2, 10, QLatin1Char('0')).arg(s, 2, 10, QLatin1Char('0'));
++        }
++        return QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
++    };
++
++    const QString timeText = formatTime(pos) + QStringLiteral(" / ") + formatTime(dur);
++
++    // Bar geometry — below the content rect
++    const qreal barY = contentRect.bottom() + ProgressBarBottomMargin;
++    const qreal barX = contentRect.left() + ProgressBarSideMargin;
++    const qreal barW = contentRect.width() - 2 * ProgressBarSideMargin;
++    const QRectF barRect(barX, barY, barW, ProgressBarHeight);
++
++    // Store for hit-testing (with padding)
++    m_videoProgressBarRect = barRect.adjusted(-ProgressBarHitPadding, -ProgressBarHitPadding, ProgressBarHitPadding, ProgressBarHitPadding);
++
++    // Background track
++    painter.setOpacity(m_animationProgress * 0.9);
++    painter.setPen(Qt::NoPen);
++    painter.setBrush(QColor(255, 255, 255, ProgressBarBgAlpha));
++    painter.drawRoundedRect(barRect, ProgressBarRadius, ProgressBarRadius);
++
++    // Filled portion
++    const QRectF fillRect(barX, barY, barW * progress, ProgressBarHeight);
++    painter.setBrush(QColor(255, 255, 255, ProgressBarFillAlpha));
++    painter.drawRoundedRect(fillRect, ProgressBarRadius, ProgressBarRadius);
++
++    // Time text below bar
++    QFont timeFont = font();
++    timeFont.setPixelSize(ProgressTimeFontSize);
++    painter.setFont(timeFont);
++    painter.setPen(QColor(255, 255, 255, static_cast<int>(200 * m_animationProgress)));
++    const QRectF timeRect(barX, barRect.bottom() + ProgressTimeMargin, barW, ProgressTimeFontSize + 4);
++    painter.drawText(timeRect, Qt::AlignHCenter | Qt::AlignTop, timeText);
++
++    painter.setOpacity(1.0);
++#else
++    Q_UNUSED(painter)
++    Q_UNUSED(contentRect)
++#endif
++}
++
 +void QuickLookOverlay::paintEvent(QPaintEvent *event)
 +{
 +    Q_UNUSED(event)
@@ -1581,7 +1762,10 @@ index 000000000..adf5c212d
 +        painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, m_currentUrl.fileName() + m_statusText);
 +    }
 +
-+    // 6. PDF overlays
++    // 6. Video progress bar
++    drawVideoProgressBar(painter, drawRect);
++
++    // 7. PDF overlays
 +    if (m_animationProgress > 0.5) {
 +        // Update arrow rects for hit-testing
 +#ifdef HAVE_POPPLER
@@ -1605,6 +1789,22 @@ index 000000000..adf5c212d
 +
 +void QuickLookOverlay::mousePressEvent(QMouseEvent *event)
 +{
++#ifdef HAVE_QTMULTIMEDIA
++    if (event->button() == Qt::LeftButton && m_contentType == ContentType::Video && m_mediaHandler && m_mediaHandler->isPlaying()
++        && m_videoProgressBarRect.contains(event->position())) {
++        const qint64 dur = m_mediaHandler->duration();
++        if (dur > 0) {
++            // Map click X to progress ratio within the actual bar (not the hit padding)
++            const qreal barX = m_videoProgressBarRect.left() + ProgressBarHitPadding;
++            const qreal barW = m_videoProgressBarRect.width() - 2 * ProgressBarHitPadding;
++            const qreal ratio = qBound(0.0, (event->position().x() - barX) / barW, 1.0);
++            m_mediaHandler->seek(static_cast<qint64>(ratio * dur));
++        }
++        event->accept();
++        return;
++    }
++#endif
++
 +#ifdef HAVE_POPPLER
 +    if (event->button() == Qt::LeftButton && m_contentType == ContentType::Pdf && m_pdfHandler->totalPages() > 1 && !m_pdfHandler->isPageLoading()) {
 +        const QPoint pos = event->pos();
@@ -1808,12 +2008,12 @@ index 000000000..adf5c212d
 +
 +    return QRectF(cx - w / 2.0, cy - h / 2.0, w, h).toRect();
 +}
-diff --git a/src/views/quicklookoverlay.h b/src/views/quicklookoverlay.h
+diff --git a/src/views/quicklook/quicklookoverlay.h b/src/views/quicklook/quicklookoverlay.h
 new file mode 100644
-index 000000000..47fcad2a2
+index 000000000..1329ca594
 --- /dev/null
-+++ b/src/views/quicklookoverlay.h
-@@ -0,0 +1,160 @@
++++ b/src/views/quicklook/quicklookoverlay.h
+@@ -0,0 +1,162 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -1905,6 +2105,7 @@ index 000000000..47fcad2a2
 +    void updatePixmap();
 +    void drawPdfSpinner(QPainter &painter, const QRectF &contentRect);
 +    void drawPdfArrows(QPainter &painter);
++    void drawVideoProgressBar(QPainter &painter, const QRectF &contentRect);
 +    void updateCrossfadeProgress();
 +    void advanceFrame();
 +
@@ -1948,6 +2149,7 @@ index 000000000..47fcad2a2
 +    // Media handler (owned by Qt parent-child hierarchy)
 +#ifdef HAVE_QTMULTIMEDIA
 +    QuickLookMediaHandler *m_mediaHandler = nullptr;
++    QRectF m_videoProgressBarRect;
 +#endif
 +
 +    // Zoom & pan
@@ -1974,11 +2176,11 @@ index 000000000..47fcad2a2
 +};
 +
 +#endif // QUICKLOOKOVERLAY_H
-diff --git a/src/views/quicklookpdfhandler.cpp b/src/views/quicklookpdfhandler.cpp
+diff --git a/src/views/quicklook/quicklookpdfhandler.cpp b/src/views/quicklook/quicklookpdfhandler.cpp
 new file mode 100644
 index 000000000..d2849f039
 --- /dev/null
-+++ b/src/views/quicklookpdfhandler.cpp
++++ b/src/views/quicklook/quicklookpdfhandler.cpp
 @@ -0,0 +1,545 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
@@ -2525,11 +2727,11 @@ index 000000000..d2849f039
 +
 +    return m_pageCache.value(pageIndex);
 +}
-diff --git a/src/views/quicklookpdfhandler.h b/src/views/quicklookpdfhandler.h
+diff --git a/src/views/quicklook/quicklookpdfhandler.h b/src/views/quicklook/quicklookpdfhandler.h
 new file mode 100644
 index 000000000..16e5dcc71
 --- /dev/null
-+++ b/src/views/quicklookpdfhandler.h
++++ b/src/views/quicklook/quicklookpdfhandler.h
 @@ -0,0 +1,131 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
