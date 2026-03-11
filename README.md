@@ -21,19 +21,18 @@ No external apps. No popups. Everything happens inside Dolphin.
 - **Rounded corners & drop shadow** — clean, modern look with dynamic shadow based on animation progress
 - **Filename display** — shown below the preview
 
-### GPU-Accelerated Rendering
+### Rendering
 
-- **Automatic GPU detection** — probes OpenGL 2.1+ / ES 2.0+ at startup, falls back to software if unavailable (llvmpipe, softpipe, swrast are detected and bypassed)
-- **GLSL shader pipeline** — rounded rectangle SDF masking, Gaussian 3x3 unsharp mask sharpening (strength 0.2), crossfade transitions, and text overlay — all in a single fragment shader pass
-- **Trilinear mipmapping** — full mipmap chain with `LinearMipMapLinear` filtering for smooth downscaling at any zoom level
-- **4x anisotropic filtering** — reduces aliasing when images are displayed smaller than their native resolution
-- **Software fallback** — pure QPainter rendering path with `SmoothPixmapTransform` provides identical visuals on systems without GPU support
+- **Pure QPainter** — zero OpenGL dependency, works on every Linux system including VMs, Wayland-only setups, and headless environments with no GPU
+- **100% compatibility** — no GPU probing, no driver quirks, no fallback paths — one rendering pipeline that works everywhere
+- **Smooth pixmap transform** — `SmoothPixmapTransform` and `Antialiasing` render hints for crisp content at any scale
+- **Crossfade transitions** — opacity blending between old and new content for smooth page navigation and hi-res upgrades
+- **Rounded corners** — QPainterPath clipping for clean, modern content presentation
 
 ### Image Preview
 
 - **All Qt-supported formats** — PNG, JPEG, GIF, BMP, WebP, SVG, TIFF, ICO, AVIF, HEIF/HEIC, JXL, and more
 - **Transparent image support** — alpha channel is preserved and composited over the dark overlay; drop shadow is automatically disabled for transparent images
-- **Image sharpening** — subtle GPU-accelerated unsharp mask (3x3 Gaussian kernel) for crisp rendering
 - **Large image protection** — images larger than 4K are capped at 3840x2160 to prevent OOM
 - **HEIF/HEIC detection** — warns when files cannot be opened due to missing `libheif` / `qt6-imageformats`
 
@@ -77,8 +76,7 @@ No external apps. No popups. Everything happens inside Dolphin.
 
 ### HiDPI Support
 
-- **DPI-aware text** — labels rendered at full device pixel ratio
-- **Physical pixel coordinates** — all GL shader uniforms and texture uploads respect `devicePixelRatioF()`
+- **DPI-aware rendering** — all coordinates and text respect `devicePixelRatioF()`
 - **Sharp on any display** — no blurry scaling on 2x/3x HiDPI screens
 
 ### Stability
@@ -203,13 +201,10 @@ The patch adds new files and modifies existing ones in Dolphin's source:
 
 | File | Purpose |
 |------|---------|
-| `src/views/quicklookoverlay.h/cpp` | Overlay orchestrator: content loading, animation, input, zoom |
-| `src/views/quicklookrenderer.h` | Abstract renderer interface (`RenderState` struct) |
-| `src/views/quicklookglrenderer.h/cpp` | GPU renderer: GLSL shader pipeline with mipmaps and anisotropic filtering |
-| `src/views/quicklookswrenderer.h/cpp` | Software renderer: QPainter fallback path |
+| `src/views/quicklookoverlay.h/cpp` | Overlay orchestrator: content loading, animation, rendering, input, zoom |
+| `src/views/quicklookconstants.h` | Shared layout constants (ContentPadding, BottomExtraSpace) |
 | `src/views/quicklookpdfhandler.h/cpp` | PDF engine: Poppler rendering, page cache, async loading, password support |
 | `src/views/quicklookmediahandler.h/cpp` | Media engine: video playback, audio with vinyl/FFT visualization |
-| `src/views/quicklookpainthelpers.h` | Shared paint utilities: PDF arrows, loading spinner |
 
 ### Modified Files
 
@@ -220,6 +215,8 @@ The patch adds new files and modifies existing ones in Dolphin's source:
 | `src/CMakeLists.txt` | Added Quick Look sources, optional Poppler/Qt Multimedia |
 | `CMakeLists.txt` | Added optional `find_package` for Poppler and Qt Multimedia |
 
+> **No OpenGL dependency.** The entire rendering pipeline uses QPainter — no GPU drivers, no GL probing, no fallback paths. Works on every system that can run Qt.
+
 ### Architecture
 
 ```
@@ -227,9 +224,7 @@ DolphinView
   └── m_topLayout (QVBoxLayout)
         └── m_container (KItemListContainer)    <- file list lives here
               └── QuickLookOverlay               <- our overlay, parented to container
-                    ├── QuickLookGLRenderer       <- GPU path (GLSL, mipmaps, aniso)
-                    │   └── QOpenGLWidget          <- GL surface
-                    ├── QuickLookSWRenderer       <- CPU fallback (QPainter)
+                    ├── QPainter                   <- rendering (no OpenGL)
                     ├── QuickLookPdfHandler        <- PDF engine (Poppler)
                     └── QuickLookMediaHandler      <- Video/audio engine (QtMultimedia)
 ```
@@ -239,7 +234,7 @@ When a supported file is double-clicked:
 1. `DolphinView::slotItemActivated()` checks the MIME type
 2. If supported, `QuickLookOverlay::showPreview()` routes to the right handler (image / PDF / video / audio)
 3. The overlay resizes to fill the container and animates in (250ms cubic ease-out, scale 0.3→1.0)
-4. Content is uploaded to the renderer (GPU texture or QPixmap) and composited with background, shadow, and label
+4. Content is rendered via QPainter and composited with background, shadow, and rounded corners
 5. The file list remains underneath — just covered by the overlay
 6. Double-click or `Escape` triggers `hidePreview()` which animates back out
 
@@ -320,15 +315,14 @@ Audio files display a rotating vinyl record with a real-time FFT spectrum analyz
 - [x] Password-protected PDF support
 - [x] Video preview with inline playback and looping
 - [x] Audio preview with rotating vinyl and real-time FFT spectrum
-- [x] GPU-accelerated rendering (GLSL) with software fallback (QPainter)
-- [x] Trilinear mipmapping and 4x anisotropic filtering for crisp downscaling
+- [x] Pure QPainter rendering — 100% compatible, no OpenGL dependency
 - [x] High-quality PDF rendering (ThinLineShape, OverprintPreview, antialiased)
 - [x] Zoom with scroll wheel (cursor-centered) and drag-to-pan
 - [x] Progressive hi-res re-render with crossfade transitions
 - [x] HiDPI / multi-DPI display support
 - [x] Transparent image support (alpha compositing, no shadow)
 - [x] Thread-safe async rendering with race condition protection
-- [ ] Submit as upstream KDE Merge Request
+- [x] Submitted as upstream KDE Merge Request ([!1209](https://invent.kde.org/system/dolphin/-/merge_requests/1209))
 
 ## Contributing
 
