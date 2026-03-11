@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dolphin Quick Look — macOS-style Quick Look for KDE Dolphin on Linux</title>
-    <meta name="description" content="Dolphin Quick Look brings macOS-style file preview to KDE Dolphin on Linux. Preview images, PDFs, videos, and audio inline with smooth animations and GPU-accelerated rendering.">
+    <meta name="description" content="Dolphin Quick Look brings macOS-style file preview to KDE Dolphin on Linux. Preview images, PDFs, videos, and audio inline with smooth animations and high-quality rendering.">
     <meta name="keywords" content="quick look linux, quicklook kde, quick look dolphin, file preview linux, macos quick look linux, kde dolphin preview, dolphin file manager preview, kde file preview, linux file preview, dolphin quick look, kde quick look, plasma quick look">
     <meta name="author" content="pir0c0pter0">
     <meta name="robots" content="index, follow">
@@ -13,7 +13,7 @@
     <!-- Open Graph -->
     <meta property="og:type" content="website">
     <meta property="og:title" content="Dolphin Quick Look — macOS-style Quick Look for KDE Dolphin">
-    <meta property="og:description" content="Preview images, PDFs, videos, and audio inline in KDE Dolphin with smooth animations and GPU-accelerated rendering. No popups, no external apps.">
+    <meta property="og:description" content="Preview images, PDFs, videos, and audio inline in KDE Dolphin with smooth animations and high-quality rendering. No popups, no external apps.">
     <meta property="og:url" content="https://pir0c0pter0.github.io/dolphin-quicklook/">
     <meta property="og:image" content="https://raw.githubusercontent.com/pir0c0pter0/dolphin-quicklook/main/demo.gif">
     <meta property="og:site_name" content="Dolphin Quick Look">
@@ -21,7 +21,7 @@
     <!-- Twitter Card -->
     <meta name="twitter:card" content="summary_large_image">
     <meta name="twitter:title" content="Dolphin Quick Look — macOS-style Quick Look for KDE Dolphin">
-    <meta name="twitter:description" content="Preview images, PDFs, videos, and audio inline in KDE Dolphin with smooth animations and GPU-accelerated rendering.">
+    <meta name="twitter:description" content="Preview images, PDFs, videos, and audio inline in KDE Dolphin with smooth animations and high-quality rendering.">
     <meta name="twitter:image" content="https://raw.githubusercontent.com/pir0c0pter0/dolphin-quicklook/main/demo.gif">
 
     <style>
@@ -530,7 +530,7 @@
             <span class="highlight">Quick Look</span> for KDE Dolphin
         </h1>
         <p class="tagline">
-            macOS-style file preview for Linux. Double-click to preview images, PDFs, videos, and audio — inline, with smooth animations and GPU-accelerated rendering.
+            macOS-style file preview for Linux. Double-click to preview images, PDFs, videos, and audio — inline, with smooth animations and high-quality rendering.
         </p>
         <div class="hero-buttons">
             <a href="#install" class="btn btn-primary">Get Started</a>
@@ -584,12 +584,12 @@
                 <p>MP3, FLAC, OGG, WAV, and more. Rotating vinyl record with groove details and a real-time 48-bar radial FFT spectrum analyzer. Playback time displayed below.</p>
             </div>
 
-            <!-- GPU -->
+            <!-- Rendering -->
             <div class="feature-card">
-                <div class="feature-icon">GPU</div>
+                <div class="feature-icon">QPt</div>
                 <span class="feature-tag tag-gpu">Performance</span>
-                <h3>GPU-Accelerated Rendering</h3>
-                <p>GLSL shader pipeline with rounded-rectangle SDF masking, unsharp-mask sharpening, trilinear mipmapping, and 4x anisotropic filtering. Automatic software fallback via QPainter.</p>
+                <h3>Pure QPainter Rendering</h3>
+                <p>Zero GPU dependency. Works on every Linux system including VMs, Wayland-only setups, and headless environments. Smooth crossfade transitions, rounded corners, and antialiased rendering.</p>
             </div>
 
             <!-- HiDPI -->
@@ -597,7 +597,7 @@
                 <div class="feature-icon">DPI</div>
                 <span class="feature-tag tag-gpu">Performance</span>
                 <h3>HiDPI Support</h3>
-                <p>DPI-aware text rendering, physical pixel coordinates in GL shaders, and sharp output on 2x/3x displays. No blurry scaling, no workarounds.</p>
+                <p>DPI-aware text and content rendering with sharp output on 2x/3x displays. No blurry scaling, no workarounds.</p>
             </div>
 
             <!-- Zoom -->
@@ -723,7 +723,7 @@
                     </tr>
                     <tr>
                         <td>Rendering</td>
-                        <td><span class="check">GPU (GLSL) + software fallback</span></td>
+                        <td><span class="check">Pure QPainter — 100% compatible</span></td>
                         <td>Software only</td>
                     </tr>
                     <tr>
@@ -799,7 +799,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "Dolphin Quick Look",
-    "description": "macOS-style Quick Look for KDE Dolphin on Linux. Preview images, PDFs, videos, and audio inline with smooth animations and GPU-accelerated rendering.",
+    "description": "macOS-style Quick Look for KDE Dolphin on Linux. Preview images, PDFs, videos, and audio inline with smooth animations and high-quality rendering.",
     "applicationCategory": "DesktopEnhancement",
     "operatingSystem": "Linux",
     "url": "https://pir0c0pter0.github.io/dolphin-quicklook/",

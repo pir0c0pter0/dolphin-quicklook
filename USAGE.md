@@ -14,7 +14,7 @@ Complete guide to using the Quick Look feature in KDE Dolphin.
 - [PDF Navigation](#pdf-navigation)
 - [Video Playback](#video-playback)
 - [Audio Playback](#audio-playback)
-- [Rendering Modes](#rendering-modes)
+- [Rendering](#rendering)
 - [Supported Formats](#supported-formats)
 - [Optional Dependencies](#optional-dependencies)
 - [Troubleshooting](#troubleshooting)
@@ -228,35 +228,14 @@ Audio codec support depends on your system's multimedia backends (same as video)
 
 Common formats (MP3, FLAC, OGG, WAV) work out of the box on most distributions.
 
-## Rendering Modes
+## Rendering
 
-Quick Look automatically selects the best rendering mode for your system.
+Quick Look uses pure QPainter rendering -- no OpenGL, no GPU dependency.
 
-### GPU Rendering (Default)
-
-Used when a hardware-accelerated OpenGL 2.1+ or ES 2.0+ context is available.
-
-**Benefits:**
-- Smooth animations at native refresh rate
-- GLSL shader-based image sharpening (3x3 Gaussian unsharp mask)
-- Trilinear mipmapping with full mipmap chain for smooth downscaling
-- 4x anisotropic filtering to eliminate aliasing artifacts
-- Efficient crossfade transitions via multi-texture blending
-- Lower CPU usage during animation
-
-**Excluded GPUs:** Software renderers (llvmpipe, softpipe, swrast) are detected and bypassed.
-
-### Software Rendering (Fallback)
-
-Used when GPU rendering is unavailable (virtual machines, remote sessions, minimal GPU drivers).
-
-**Characteristics:**
-- Pure QPainter rendering -- no GPU required
-- Identical visual output to the GPU path
-- May show lower frame rates during animation on slower hardware
-- All features work the same (zoom, PDF navigation, video)
-
-> You don't need to configure anything. The renderer is selected automatically at startup.
+- `SmoothPixmapTransform` and `Antialiasing` render hints for crisp content at any scale
+- Crossfade transitions via opacity blending between old and new content
+- Rounded corners via QPainterPath clipping
+- Works on every Linux system including VMs, Wayland-only setups, and headless environments
 
 ## Supported Formats
 
@@ -359,8 +338,7 @@ sudo apt install qt6-image-formats-plugins
 
 ### Animations are choppy
 
-- **Software rendering** -- if your system fell back to CPU rendering, animations may be slower. Check your GPU drivers.
-- **High-resolution display** -- on 4K+ displays, ensure your GPU drivers support hardware acceleration.
+- **High-resolution display** -- on 4K+ displays, hi-res re-rendering may take slightly longer for very large images.
 
 ### PDF pages load slowly
 
