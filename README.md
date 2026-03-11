@@ -4,6 +4,8 @@
 
 No external apps. No popups. Everything happens inside Dolphin.
 
+![Dolphin Quick Look Demo](demo.gif)
+
 ---
 
 ## Features
