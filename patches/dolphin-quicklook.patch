@@ -1,5 +1,69 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d639f6568..e316a0a7a 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -58,6 +58,19 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
+     DBus
+ )
+ 
++find_package(Qt6 ${QT_MIN_VERSION} CONFIG QUIET COMPONENTS
++    Multimedia
++    MultimediaWidgets
++)
++if(Qt6Multimedia_FOUND AND Qt6MultimediaWidgets_FOUND)
++    set(HAVE_QTMULTIMEDIA TRUE)
++endif()
++set_package_properties(Qt6Multimedia PROPERTIES
++    DESCRIPTION "Qt Multimedia module"
++    TYPE OPTIONAL
++    PURPOSE "Required for video preview in Quick Look overlay"
++)
++
+ if (Qt6Gui_VERSION VERSION_GREATER_EQUAL "6.10.0")
+     find_package(Qt6GuiPrivate ${REQUIRED_QT_VERSION} REQUIRED NO_MODULE)
+ endif()
+@@ -113,6 +126,27 @@ if(PackageKitQt6_FOUND)
+     set(HAVE_PACKAGEKIT TRUE)
+ endif()
+ 
++if(HAVE_QTMULTIMEDIA)
++    set(_ql_multimedia "ON")
++else()
++    set(_ql_multimedia "OFF")
++endif()
++# Qt PDF (PDFium backend) — PDF rendering for Quick Look
++find_package(Qt6 ${QT_MIN_VERSION} QUIET OPTIONAL_COMPONENTS Pdf)
++set(HAVE_QTPDF ${Qt6Pdf_FOUND})
++set_package_properties(Qt6Pdf PROPERTIES
++    DESCRIPTION "Qt PDF rendering module (PDFium backend)"
++    TYPE RECOMMENDED
++    PURPOSE "PDF preview in Quick Look overlay"
++)
++
++if(HAVE_QTPDF)
++    set(_ql_qtpdf "ON")
++else()
++    set(_ql_qtpdf "OFF")
++endif()
++message(STATUS "Quick Look overlay: QtPdf=${_ql_qtpdf}, Multimedia=${_ql_multimedia}")
++
+ find_package(KF6FileMetaData ${KF6_MIN_VERSION})
+ set_package_properties(KF6FileMetaData PROPERTIES
+                        URL "https://projects.kde.org/kfilemetadata"
+@@ -136,11 +170,6 @@ set_package_properties(KF6BalooWidgets PROPERTIES DESCRIPTION "Baloos Widgets"
+ if (KF6Baloo_FOUND AND KF6BalooWidgets_FOUND)
+     message(STATUS "Baloo packages are found")
+     set(HAVE_BALOO TRUE)
+-
+-    find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
+-        Multimedia
+-        MultimediaWidgets
+-    )
+ else ()
+     message(WARNING "Baloo packages not found. They are needed for the metadata features of Dolphin (including the information panel).")
+ endif()
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 4faabe9d5..cd0cb5804 100644
+index 4faabe9d5..0481057a2 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -111,6 +111,11 @@ target_sources(dolphinprivate PRIVATE
@@ -14,16 +78,10 @@ index 4faabe9d5..cd0cb5804 100644
      views/draganddrophelper.cpp
      views/versioncontrol/updateitemstatesthread.cpp
      views/versioncontrol/versioncontrolobserver.cpp
-@@ -237,6 +242,21 @@ target_link_libraries(
+@@ -237,6 +242,20 @@ target_link_libraries(
      ${FTS_LIB}
  )
  
-+if(POPPLER_QT6_FOUND)
-+    target_compile_definitions(dolphinprivate PRIVATE HAVE_POPPLER)
-+    target_include_directories(dolphinprivate PRIVATE ${POPPLER_QT6_INCLUDE_DIRS})
-+    target_link_libraries(dolphinprivate PRIVATE ${POPPLER_QT6_LIBRARIES})
-+endif()
-+
 +if(HAVE_QTMULTIMEDIA)
 +    target_sources(dolphinprivate PRIVATE
 +        views/quicklook/quicklookmediahandler.cpp
@@ -33,10 +91,15 @@ index 4faabe9d5..cd0cb5804 100644
 +    target_link_libraries(dolphinprivate PRIVATE Qt6::Multimedia Qt6::MultimediaWidgets)
 +endif()
 +
++if(HAVE_QTPDF)
++    target_compile_definitions(dolphinprivate PRIVATE HAVE_QTPDF)
++    target_link_libraries(dolphinprivate PRIVATE Qt6::Pdf)
++endif()
++
  if(HAVE_BALOO)
      target_link_libraries(
          dolphinprivate PUBLIC
-@@ -438,10 +458,12 @@ if(HAVE_BALOO)
+@@ -438,10 +457,12 @@ if(HAVE_BALOO)
          panels/information/dolphin_informationpanelsettings.kcfgc
      )
  
@@ -928,10 +991,10 @@ index 000000000..95f25c612
 +#endif // QUICKLOOKMEDIAHANDLER_H
 diff --git a/src/views/quicklook/quicklookoverlay.cpp b/src/views/quicklook/quicklookoverlay.cpp
 new file mode 100644
-index 000000000..69c65140b
+index 000000000..bc20f884b
 --- /dev/null
 +++ b/src/views/quicklook/quicklookoverlay.cpp
-@@ -0,0 +1,1076 @@
+@@ -0,0 +1,1229 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -940,7 +1003,7 @@ index 000000000..69c65140b
 +
 +#include "quicklookoverlay.h"
 +#include "quicklookconstants.h"
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +#include "quicklookpdfhandler.h"
 +#endif
 +#ifdef HAVE_QTMULTIMEDIA
@@ -952,7 +1015,7 @@ index 000000000..69c65140b
 +#include <QKeyEvent>
 +#include <QMimeDatabase>
 +#include <QMouseEvent>
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +#include <QInputDialog>
 +#include <QLineEdit>
 +#endif
@@ -1026,16 +1089,55 @@ index 000000000..69c65140b
 +    m_frameTimer->setInterval(16);
 +    connect(m_frameTimer, &QTimer::timeout, this, &QuickLookOverlay::advanceFrame);
 +
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +    m_pdfHandler = new QuickLookPdfHandler(this);
 +    connect(m_pdfHandler, &QuickLookPdfHandler::contentReady, this, [this](const QImage &image) {
 +        setContentImage(image);
++        m_pdfPageLogicalSize = m_pdfHandler->pageLogicalSize();
 +        updatePixmap();
 +    });
 +    connect(m_pdfHandler, &QuickLookPdfHandler::crossfadeReady, this, [this](const QImage &newImage, const QImage &oldImage) {
++        m_pdfPageLogicalSize = m_pdfHandler->pageLogicalSize();
 +        startCrossfade(newImage, oldImage);
 +    });
 +    connect(m_pdfHandler, &QuickLookPdfHandler::requestUpdate, this, QOverload<>::of(&QWidget::update));
++    connect(m_pdfHandler, &QuickLookPdfHandler::hiResRenderStarted, this, [this]() {
++        m_frameTimer->start();
++    });
++    connect(m_pdfHandler, &QuickLookPdfHandler::asyncLoadReady, this, [this](QuickLookPdfHandler::LoadResult result) {
++        if (result == QuickLookPdfHandler::LoadResult::Success) {
++            m_statusText = m_pdfHandler->statusText();
++            update();
++        } else if (result == QuickLookPdfHandler::LoadResult::PasswordRequired) {
++            bool ok = false;
++            for (int attempt = 0; attempt < 3; ++attempt) {
++                const QString title = attempt == 0 ? tr("Protected PDF") : tr("Protected PDF — Wrong password");
++                const QString password =
++                    QInputDialog::getText(parentWidget(), title, tr("Enter password to open this PDF:"), QLineEdit::Password, QString(), &ok);
++
++                if (!ok || password.isEmpty()) {
++                    break;
++                }
++
++                if (m_pdfHandler->unlockWithPassword(password)) {
++                    m_statusText = m_pdfHandler->statusText();
++                    updatePixmap();
++                    update();
++                    return;
++                }
++            }
++            // Failed to unlock — close overlay
++            m_active = false;
++            m_pdfHandler->cleanup();
++            hide();
++            Q_EMIT previewClosed();
++        } else {
++            // Load failed — close overlay
++            m_active = false;
++            hide();
++            Q_EMIT previewClosed();
++        }
++    });
 +#endif
 +
 +#ifdef HAVE_QTMULTIMEDIA
@@ -1091,7 +1193,7 @@ index 000000000..69c65140b
 +    }
 +
 +    if (mimeType == QLatin1String("application/pdf")) {
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +        return true;
 +#else
 +        return false;
@@ -1136,16 +1238,60 @@ index 000000000..69c65140b
 +    m_frameTimer->start();
 +}
 +
++QSize QuickLookOverlay::displayAreaPixels() const
++{
++    int w = width();
++    int h = height();
++
++    // Before overlay is shown, use parent widget size
++    if (w <= 0 || h <= 0) {
++        if (parentWidget()) {
++            w = parentWidget()->width();
++            h = parentWidget()->height();
++        } else {
++            return {MaxImageWidth, MaxImageHeight};
++        }
++    }
++
++    const qreal dpr = devicePixelRatioF();
++    const int maxW = static_cast<int>((w - 2 * ContentPadding) * dpr);
++    const int maxH = static_cast<int>((h - 2 * ContentPadding - BottomExtraSpace) * dpr);
++
++    if (maxW <= 0 || maxH <= 0) {
++        return {MaxImageWidth, MaxImageHeight};
++    }
++    return {maxW, maxH};
++}
++
++int QuickLookOverlay::targetImageRenderWidth() const
++{
++    const QRectF base = baseContentRect();
++    if (base.isEmpty()) {
++        return 0;
++    }
++
++    const qreal dpr = devicePixelRatioF();
++    const int physicalWidth = static_cast<int>(base.width() * dpr * m_zoomFactor);
++
++    // Never exceed original image dimensions
++    if (m_imageOriginalSize.isValid()) {
++        return qMin(physicalWidth, m_imageOriginalSize.width());
++    }
++    return physicalWidth;
++}
++
 +bool QuickLookOverlay::loadImage(const QString &filePath)
 +{
 +    QImageReader reader(filePath);
 +    reader.setAutoTransform(true);
 +
-+    const QSize maxSize(MaxImageWidth, MaxImageHeight);
 +    const QSize imgSize = reader.size();
-+    if (imgSize.isValid() && (imgSize.width() > maxSize.width() || imgSize.height() > maxSize.height())) {
++
++    // Load at display-appropriate resolution instead of arbitrary max
++    const QSize displayMax = displayAreaPixels();
++    if (imgSize.isValid() && (imgSize.width() > displayMax.width() || imgSize.height() > displayMax.height())) {
 +        QSize scaled = imgSize;
-+        scaled.scale(maxSize, Qt::KeepAspectRatio);
++        scaled.scale(displayMax, Qt::KeepAspectRatio);
 +        reader.setScaledSize(scaled);
 +    }
 +
@@ -1179,7 +1325,7 @@ index 000000000..69c65140b
 +    m_imageRenderPending = false;
 +    m_hiResRenderTimer->stop();
 +
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +    m_pdfHandler->cancelPendingRenders();
 +#endif
 +
@@ -1191,8 +1337,9 @@ index 000000000..69c65140b
 +        m_crossfadeOldPixmap = QPixmap();
 +        m_crossfadeOldImage = QImage();
 +        m_hiResLowResImage = QImage();
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +        m_pdfHandler->cleanup();
++        m_pdfPageLogicalSize = QSizeF();
 +#endif
 +#ifdef HAVE_QTMULTIMEDIA
 +        m_mediaHandler->cleanup();
@@ -1210,7 +1357,7 @@ index 000000000..69c65140b
 +    if (mimeType.startsWith(QLatin1String("image/"))) {
 +        loaded = loadImage(filePath);
 +    } else if (mimeType == QLatin1String("application/pdf")) {
-+        loaded = loadPdfPreview(filePath);
++        return loadPdfPreview(filePath, fileUrl);
 +    }
 +#ifdef HAVE_QTMULTIMEDIA
 +    else if (mimeType.startsWith(QLatin1String("video/"))) {
@@ -1228,40 +1375,37 @@ index 000000000..69c65140b
 +    return true;
 +}
 +
-+bool QuickLookOverlay::loadPdfPreview(const QString &filePath)
++bool QuickLookOverlay::loadPdfPreview(const QString &filePath, const QUrl &fileUrl)
 +{
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +    m_contentType = ContentType::Pdf;
 +    m_hasAlphaChannel = false;
 +    m_imageFilePath.clear();
 +    m_statusText.clear();
++    m_currentUrl = fileUrl;
++    m_active = true;
++    resetZoom();
++
++    if (!parentWidget()) {
++        return false;
++    }
++
++    move(0, 0);
++    resize(parentWidget()->size());
++
 +    m_pdfHandler->setDisplayArea(width(), height(), devicePixelRatioF());
++    m_pdfHandler->loadAsync(filePath);
 +
-+    auto result = m_pdfHandler->load(filePath);
-+    if (result == QuickLookPdfHandler::LoadResult::PasswordRequired) {
-+        bool ok = false;
-+        for (int attempt = 0; attempt < 3; ++attempt) {
-+            const QString title = attempt == 0 ? tr("Protected PDF") : tr("Protected PDF — Wrong password");
-+            const QString password = QInputDialog::getText(parentWidget(), title, tr("Enter password to open this PDF:"), QLineEdit::Password, QString(), &ok);
++    // Show overlay immediately with spinner — content arrives via async signal
++    show();
++    raise();
++    setFocus();
++    startShowAnimation();
 +
-+            if (!ok || password.isEmpty()) {
-+                break;
-+            }
-+
-+            if (m_pdfHandler->unlockWithPassword(password)) {
-+                result = QuickLookPdfHandler::LoadResult::Success;
-+                break;
-+            }
-+        }
-+    }
-+
-+    const bool loaded = (result == QuickLookPdfHandler::LoadResult::Success);
-+    if (loaded) {
-+        m_statusText = m_pdfHandler->statusText();
-+    }
-+    return loaded;
++    return true;
 +#else
 +    Q_UNUSED(filePath)
++    Q_UNUSED(fileUrl)
 +    return false;
 +#endif
 +}
@@ -1382,8 +1526,9 @@ index 000000000..69c65140b
 +        m_crossfadeOldPixmap = QPixmap();
 +        m_crossfadeOldImage = QImage();
 +        m_hiResLowResImage = QImage();
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +        m_pdfHandler->cleanup();
++        m_pdfPageLogicalSize = QSizeF();
 +#endif
 +#ifdef HAVE_QTMULTIMEDIA
 +        m_mediaHandler->cleanup();
@@ -1436,7 +1581,7 @@ index 000000000..69c65140b
 +void QuickLookOverlay::scheduleHiResRerender()
 +{
 +    if (m_contentType == ContentType::Pdf) {
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +        m_pdfHandler->setDisplayArea(width(), height(), devicePixelRatioF());
 +        m_pdfHandler->scheduleHiResRerender(m_zoomFactor);
 +#endif
@@ -1445,9 +1590,12 @@ index 000000000..69c65140b
 +            return;
 +        }
 +
-+        const QRectF base = baseContentRect();
-+        const int targetWidth = qBound(static_cast<int>(base.width()), static_cast<int>(base.width() * m_zoomFactor), m_imageOriginalSize.width());
-+        const qreal ratio = static_cast<qreal>(targetWidth) / m_imageRenderedWidth;
++        const int target = targetImageRenderWidth();
++        if (target <= 0 || m_imageRenderedWidth <= 0) {
++            return;
++        }
++
++        const qreal ratio = static_cast<qreal>(m_imageRenderedWidth) / target;
 +        if (ratio > 0.85 && ratio < 1.15) {
 +            return;
 +        }
@@ -1467,14 +1615,18 @@ index 000000000..69c65140b
 +        return;
 +    }
 +
-+    const QRectF base = baseContentRect();
-+    const int targetWidth = qBound(static_cast<int>(base.width()), static_cast<int>(base.width() * m_zoomFactor), m_imageOriginalSize.width());
-+    const qreal ratio = static_cast<qreal>(targetWidth) / m_imageRenderedWidth;
++    const int target = targetImageRenderWidth();
++    if (target <= 0 || m_imageRenderedWidth <= 0) {
++        return;
++    }
++
++    const qreal ratio = static_cast<qreal>(m_imageRenderedWidth) / target;
 +    if (ratio > 0.85 && ratio < 1.15) {
 +        return;
 +    }
 +
 +    m_imageRenderPending = true;
++    m_frameTimer->start();
 +    m_renderImageFilePath = m_imageFilePath;
 +
 +    const QString filePath = m_imageFilePath;
@@ -1483,7 +1635,7 @@ index 000000000..69c65140b
 +        m_imageRenderPending = false;
 +        return;
 +    }
-+    const int tw = targetWidth;
++    const int tw = target;
 +    m_imageRenderWatcher.setFuture(QtConcurrent::run([filePath, origSize, tw]() -> QImage {
 +        QImageReader reader(filePath);
 +        reader.setAutoTransform(true);
@@ -1540,17 +1692,76 @@ index 000000000..69c65140b
 +    }
 +}
 +
++bool QuickLookOverlay::isHiResRendering() const
++{
++    if (m_imageRenderPending) {
++        return true;
++    }
++#ifdef HAVE_QTPDF
++    if (m_contentType == ContentType::Pdf && m_pdfHandler && m_pdfHandler->isHiResRendering()) {
++        return true;
++    }
++#endif
++    return false;
++}
++
 +void QuickLookOverlay::advanceFrame()
 +{
 +    advanceAnimation();
 +    advanceZoomAnimation();
 +    updateCrossfadeProgress();
++
++    if (isHiResRendering()) {
++        m_hiResSpinnerAngle += 15.0;
++        if (m_hiResSpinnerAngle >= 360.0) {
++            m_hiResSpinnerAngle -= 360.0;
++        }
++    } else if (m_hiResSpinnerAngle != 0.0) {
++        m_hiResSpinnerAngle = 0.0;
++        if (!m_animating && !m_zoomAnimating && !m_hiResCrossfading) {
++            m_frameTimer->stop();
++        }
++    }
++
 +    update();
++}
++
++void QuickLookOverlay::drawRenderSpinner(QPainter &painter, const QRectF &contentRect)
++{
++    if (!isHiResRendering() || m_hiResSpinnerAngle == 0.0) {
++        return;
++    }
++
++    painter.save();
++
++    // Small corner spinner for all hi-res rerenders (images, PDF zoom, etc.)
++    // No dim overlay — avoids flicker during continuous zoom on large PDFs
++    constexpr qreal spinnerSize = 22.0;
++    constexpr qreal penWidth = 2.5;
++    constexpr int margin = 12;
++
++    const qreal cx = contentRect.right() - margin - spinnerSize / 2.0;
++    const qreal cy = contentRect.bottom() - margin - spinnerSize / 2.0;
++    const QRectF strokeRect(cx - spinnerSize / 2.0 + penWidth / 2.0, cy - spinnerSize / 2.0 + penWidth / 2.0, spinnerSize - penWidth, spinnerSize - penWidth);
++
++    painter.setOpacity(m_animationProgress * 0.7);
++
++    QConicalGradient gradient(QPointF(cx, cy), m_hiResSpinnerAngle);
++    gradient.setColorAt(0.0, QColor(255, 255, 255, 200));
++    gradient.setColorAt(0.6, QColor(255, 255, 255, 30));
++    gradient.setColorAt(0.75, QColor(255, 255, 255, 0));
++    gradient.setColorAt(1.0, QColor(255, 255, 255, 0));
++
++    QPen spinnerPen(QBrush(gradient), penWidth, Qt::SolidLine, Qt::RoundCap);
++    painter.setPen(spinnerPen);
++    painter.setBrush(Qt::NoBrush);
++    painter.drawEllipse(strokeRect);
++    painter.restore();
 +}
 +
 +void QuickLookOverlay::drawPdfSpinner(QPainter &painter, const QRectF &contentRect)
 +{
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +    if (m_contentType != ContentType::Pdf || !m_pdfHandler->isPageLoading()) {
 +        return;
 +    }
@@ -1558,14 +1769,6 @@ index 000000000..69c65140b
 +    const QPointF center = contentRect.center();
 +    const QRectF spinnerRect(center.x() - PdfSpinnerSize / 2.0, center.y() - PdfSpinnerSize / 2.0, PdfSpinnerSize, PdfSpinnerSize);
 +    const QRectF strokeRect = spinnerRect.adjusted(PdfSpinnerPenWidth / 2.0, PdfSpinnerPenWidth / 2.0, -PdfSpinnerPenWidth / 2.0, -PdfSpinnerPenWidth / 2.0);
-+
-+    // Dim overlay on content
-+    painter.setOpacity(m_animationProgress * PdfSpinnerDimOpacity);
-+    QPainterPath contentClip;
-+    contentClip.addRoundedRect(contentRect, CornerRadius, CornerRadius);
-+    painter.setClipPath(contentClip);
-+    painter.fillRect(contentRect.toRect(), QColor(0, 0, 0));
-+    painter.setClipping(false);
 +
 +    // Smooth gradient spinner
 +    painter.setOpacity(m_animationProgress * PdfSpinnerOpacity);
@@ -1588,7 +1791,7 @@ index 000000000..69c65140b
 +
 +void QuickLookOverlay::drawPdfArrows(QPainter &painter)
 +{
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +    if (m_contentType != ContentType::Pdf || m_pdfHandler->totalPages() <= 1) {
 +        return;
 +    }
@@ -1695,16 +1898,18 @@ index 000000000..69c65140b
 +{
 +    Q_UNUSED(event)
 +
-+    if (m_pixmap.isNull()) {
-+        return;
-+    }
-+
 +    QPainter painter(this);
 +    painter.setRenderHint(QPainter::Antialiasing);
 +    painter.setRenderHint(QPainter::SmoothPixmapTransform);
 +
-+    // 1. Background dim
++    // 1. Background dim (always draw when active)
 +    painter.fillRect(rect(), QColor(0, 0, 0, static_cast<int>(BgAlphaMax * m_animationProgress)));
++
++    if (m_pixmap.isNull()) {
++        // Draw spinner during async PDF loading
++        drawPdfSpinner(painter, QRectF(rect()));
++        return;
++    }
 +
 +    // 2. Compute draw rect (scale + zoom + pan)
 +    const QRectF base = baseContentRect();
@@ -1719,8 +1924,8 @@ index 000000000..69c65140b
 +    const QRectF drawRect(center.x() + m_panOffset.x() - w / 2.0, center.y() + m_panOffset.y() - h / 2.0, w, h);
 +    const QRectF anchorRect(center.x() - w / 2.0, center.y() - h / 2.0, w, h);
 +
-+    // 3. Drop shadow (skip for alpha/audio content)
-+    if (!m_hasAlphaChannel && m_contentType != ContentType::Audio) {
++    // 3. Drop shadow (skip for alpha/audio/PDF content)
++    if (!m_hasAlphaChannel && m_contentType != ContentType::Audio && m_contentType != ContentType::Pdf) {
 +        const int offset = static_cast<int>(ShadowOffset * m_animationProgress);
 +        QColor shadowColor(0, 0, 0, static_cast<int>(ShadowAlphaMax * m_animationProgress));
 +        painter.setPen(Qt::NoPen);
@@ -1768,7 +1973,7 @@ index 000000000..69c65140b
 +    // 7. PDF overlays
 +    if (m_animationProgress > 0.5) {
 +        // Update arrow rects for hit-testing
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +        if (m_contentType == ContentType::Pdf && m_pdfHandler->totalPages() > 1) {
 +            const int arrowX = anchorRect.right() + PdfArrowMargin;
 +            const int centerY = anchorRect.center().y();
@@ -1779,6 +1984,9 @@ index 000000000..69c65140b
 +        drawPdfSpinner(painter, drawRect);
 +        drawPdfArrows(painter);
 +    }
++
++    // 8. Hi-res render spinner (zoom reprocessing indicator)
++    drawRenderSpinner(painter, drawRect);
 +}
 +
 +void QuickLookOverlay::mouseDoubleClickEvent(QMouseEvent *event)
@@ -1805,7 +2013,7 @@ index 000000000..69c65140b
 +    }
 +#endif
 +
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +    if (event->button() == Qt::LeftButton && m_contentType == ContentType::Pdf && m_pdfHandler->totalPages() > 1 && !m_pdfHandler->isPageLoading()) {
 +        const QPoint pos = event->pos();
 +        if (m_pdfArrowUpRect.contains(pos) && m_pdfHandler->currentPage() > 0) {
@@ -1913,7 +2121,7 @@ index 000000000..69c65140b
 +        return;
 +    }
 +
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +    if (m_contentType == ContentType::Pdf && m_pdfHandler->totalPages() > 1) {
 +        if (event->key() == Qt::Key_Up || event->key() == Qt::Key_PageUp) {
 +            resetZoom();
@@ -1938,7 +2146,7 @@ index 000000000..69c65140b
 +void QuickLookOverlay::resizeEvent(QResizeEvent *event)
 +{
 +    QWidget::resizeEvent(event);
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +    if (m_pdfHandler) {
 +        m_pdfHandler->setDisplayArea(width(), height(), devicePixelRatioF());
 +    }
@@ -1979,19 +2187,27 @@ index 000000000..69c65140b
 +    const int maxW = width() - 2 * ContentPadding;
 +    const int maxH = height() - 2 * ContentPadding - BottomExtraSpace;
 +
-+    QSize contentSize;
-+    if (!m_contentImage.isNull()) {
-+        contentSize = m_contentImage.size();
++    // Use stable logical size to prevent rect jumps during hi-res crossfade
++    QSizeF logicalSize;
++#ifdef HAVE_QTPDF
++    if (m_contentType == ContentType::Pdf && m_pdfPageLogicalSize.isValid()) {
++        logicalSize = m_pdfPageLogicalSize;
++    } else
++#endif
++        if (m_contentType == ContentType::Image && m_imageOriginalSize.isValid()) {
++        logicalSize = QSizeF(m_imageOriginalSize);
++    } else if (!m_contentImage.isNull()) {
++        logicalSize = QSizeF(m_contentImage.size());
 +    } else {
 +        return {};
 +    }
 +
-+    contentSize.scale(maxW, maxH, Qt::KeepAspectRatio);
++    logicalSize.scale(maxW, maxH, Qt::KeepAspectRatio);
 +
-+    const qreal x = (width() - contentSize.width()) / 2.0;
-+    const qreal y = (height() - contentSize.height()) / 2.0 - ContentVerticalShift;
++    const qreal x = (width() - logicalSize.width()) / 2.0;
++    const qreal y = (height() - logicalSize.height()) / 2.0 - ContentVerticalShift;
 +
-+    return {x, y, static_cast<qreal>(contentSize.width()), static_cast<qreal>(contentSize.height())};
++    return {x, y, logicalSize.width(), logicalSize.height()};
 +}
 +
 +QRect QuickLookOverlay::scaledContentRect() const
@@ -2010,10 +2226,10 @@ index 000000000..69c65140b
 +}
 diff --git a/src/views/quicklook/quicklookoverlay.h b/src/views/quicklook/quicklookoverlay.h
 new file mode 100644
-index 000000000..1329ca594
+index 000000000..06cffe5c2
 --- /dev/null
 +++ b/src/views/quicklook/quicklookoverlay.h
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,172 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -2029,12 +2245,13 @@ index 000000000..1329ca594
 +#include <QImage>
 +#include <QPixmap>
 +#include <QPointF>
++#include <QSizeF>
 +#include <QUrl>
 +#include <QWidget>
 +
 +class QTimer;
 +
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +class QuickLookPdfHandler;
 +#endif
 +
@@ -2085,7 +2302,7 @@ index 000000000..1329ca594
 +    QRect scaledContentRect() const;
 +
 +    bool loadImage(const QString &filePath);
-+    bool loadPdfPreview(const QString &filePath);
++    bool loadPdfPreview(const QString &filePath, const QUrl &fileUrl);
 +    bool loadMediaPreview(const QUrl &fileUrl, ContentType type);
 +    void activateAndShow(const QUrl &fileUrl);
 +
@@ -2098,6 +2315,11 @@ index 000000000..1329ca594
 +    void scheduleHiResRerender();
 +    void rerenderHiRes();
 +    void onHiResRenderFinished();
++
++    int targetImageRenderWidth() const;
++    QSize displayAreaPixels() const;
++    bool isHiResRendering() const;
++    void drawRenderSpinner(QPainter &painter, const QRectF &contentRect);
 +
 +    void setContentImage(const QImage &image);
 +    void startCrossfade(const QImage &newImage, const QImage &oldImage);
@@ -2140,10 +2362,11 @@ index 000000000..1329ca594
 +    QTimer *m_frameTimer = nullptr;
 +
 +    // PDF handler (owned by Qt parent-child hierarchy)
-+#ifdef HAVE_POPPLER
++#ifdef HAVE_QTPDF
 +    QuickLookPdfHandler *m_pdfHandler = nullptr;
 +    QRect m_pdfArrowUpRect;
 +    QRect m_pdfArrowDownRect;
++    QSizeF m_pdfPageLogicalSize;
 +#endif
 +
 +    // Media handler (owned by Qt parent-child hierarchy)
@@ -2165,6 +2388,9 @@ index 000000000..1329ca594
 +    QPointF m_zoomAnimStartPan;
 +    int m_zoomAnimDuration = 200;
 +
++    // Hi-res render spinner
++    qreal m_hiResSpinnerAngle = 0.0;
++
 +    // Frame-driven animation
 +    QElapsedTimer m_animTimer;
 +    QEasingCurve m_easingCurve{QEasingCurve::OutCubic};
@@ -2178,10 +2404,10 @@ index 000000000..1329ca594
 +#endif // QUICKLOOKOVERLAY_H
 diff --git a/src/views/quicklook/quicklookpdfhandler.cpp b/src/views/quicklook/quicklookpdfhandler.cpp
 new file mode 100644
-index 000000000..d2849f039
+index 000000000..1a7447b30
 --- /dev/null
 +++ b/src/views/quicklook/quicklookpdfhandler.cpp
-@@ -0,0 +1,545 @@
+@@ -0,0 +1,437 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -2191,27 +2417,31 @@ index 000000000..d2849f039
 +#include "quicklookpdfhandler.h"
 +#include "quicklookconstants.h"
 +
++#include <QRect>
 +#include <QTimer>
-+#include <QtConcurrent>
-+
-+#ifdef HAVE_POPPLER
-+#include <poppler-qt6.h>
-+#endif
 +
 +namespace
 +{
 +using namespace QuickLookConstants;
-+}
++} // namespace
++
++// ---------------------------------------------------------------------------
++// Constructor / Destructor
++// ---------------------------------------------------------------------------
 +
 +QuickLookPdfHandler::QuickLookPdfHandler(QObject *parent)
 +    : QObject(parent)
 +{
++    m_pdfDoc = new QPdfDocument(this);
++    m_pdfRenderer = new QPdfPageRenderer(this);
++    m_pdfRenderer->setDocument(m_pdfDoc);
++    m_pdfRenderer->setRenderMode(QPdfPageRenderer::RenderMode::MultiThreaded);
++
++    connect(m_pdfRenderer, &QPdfPageRenderer::pageRendered, this, &QuickLookPdfHandler::onPageRendered);
++
 +    m_hiResRenderTimer = new QTimer(this);
 +    m_hiResRenderTimer->setSingleShot(true);
 +    connect(m_hiResRenderTimer, &QTimer::timeout, this, &QuickLookPdfHandler::onHiResTimerTimeout);
-+
-+    connect(&m_hiResRenderWatcher, &QFutureWatcher<QImage>::finished, this, &QuickLookPdfHandler::onHiResRenderFinished);
-+    connect(&m_pageRenderWatcher, &QFutureWatcher<QImage>::finished, this, &QuickLookPdfHandler::onPageRenderFinished);
 +}
 +
 +QuickLookPdfHandler::~QuickLookPdfHandler()
@@ -2219,115 +2449,87 @@ index 000000000..d2849f039
 +    cancelPendingRenders();
 +}
 +
-+QuickLookPdfHandler::LoadResult QuickLookPdfHandler::load(const QString &filePath)
++// ---------------------------------------------------------------------------
++// Public API
++// ---------------------------------------------------------------------------
++
++void QuickLookPdfHandler::loadAsync(const QString &filePath)
 +{
-+#ifdef HAVE_POPPLER
-+    m_document = Poppler::Document::load(filePath);
-+    if (!m_document) {
-+        return LoadResult::Failed;
-+    }
-+
-+    if (m_document->isLocked()) {
-+        m_filePath = filePath;
-+        return LoadResult::PasswordRequired;
-+    }
-+
-+    applyRenderHints(m_document.get());
-+
-+    m_bgDocument = Poppler::Document::load(filePath);
-+    if (m_bgDocument) {
-+        applyRenderHints(m_bgDocument.get());
-+    }
-+
-+    m_totalPages = m_document->numPages();
-+    m_currentPage = 0;
++    m_pdfDoc->close();
 +    m_filePath = filePath;
 +    m_pageCache.clear();
 +    m_cacheLru.clear();
++    m_currentPage = 0;
++    m_totalPages = 0;
++    m_currentImage = QImage();
++    m_pageLoading = true;
++    startSpinner();
++    Q_EMIT pageLoadingChanged(true);
 +
-+    renderPage(0);
++    m_pdfDoc->load(filePath);
 +
-+    if (!m_currentImage.isNull()) {
-+        m_hiResRenderTimer->start(PageRenderDelayMs);
++    // QPdfDocument::load() is synchronous for local files — check status directly
++    const auto status = m_pdfDoc->status();
++    if (status == QPdfDocument::Status::Ready) {
++        m_totalPages = m_pdfDoc->pageCount();
++        requestPage(0, previewSize());
++    } else if (status == QPdfDocument::Status::Error) {
++        stopSpinner();
++        Q_EMIT pageLoadingChanged(false);
++        if (m_pdfDoc->error() == QPdfDocument::Error::IncorrectPassword) {
++            Q_EMIT asyncLoadReady(LoadResult::PasswordRequired);
++        } else {
++            Q_EMIT asyncLoadReady(LoadResult::Failed);
++        }
++    } else {
++        // Unexpected status (e.g. Loading for remote files)
++        stopSpinner();
++        Q_EMIT pageLoadingChanged(false);
++        Q_EMIT asyncLoadReady(LoadResult::Failed);
 +    }
-+
-+    return m_currentImage.isNull() ? LoadResult::Failed : LoadResult::Success;
-+#else
-+    Q_UNUSED(filePath)
-+    return LoadResult::Failed;
-+#endif
 +}
 +
 +bool QuickLookPdfHandler::unlockWithPassword(const QString &password)
 +{
-+#ifdef HAVE_POPPLER
-+    if (!m_document) {
++    m_pdfDoc->setPassword(password);
++    m_pdfDoc->load(m_filePath);
++
++    if (m_pdfDoc->status() != QPdfDocument::Status::Ready) {
 +        return false;
 +    }
 +
-+    const QByteArray passwordBytes = password.toUtf8();
-+    m_document->unlock(passwordBytes, passwordBytes);
-+
-+    if (m_document->isLocked()) {
-+        return false;
-+    }
-+
-+    applyRenderHints(m_document.get());
-+
-+    m_bgDocument = Poppler::Document::load(m_filePath, passwordBytes, passwordBytes);
-+    if (m_bgDocument) {
-+        applyRenderHints(m_bgDocument.get());
-+    }
-+
-+    m_totalPages = m_document->numPages();
++    m_totalPages = m_pdfDoc->pageCount();
 +    m_currentPage = 0;
 +    m_pageCache.clear();
 +    m_cacheLru.clear();
-+
-+    renderPage(0);
-+
-+    if (!m_currentImage.isNull()) {
-+        m_hiResRenderTimer->start(PageRenderDelayMs);
-+    }
-+
-+    return !m_currentImage.isNull();
-+#else
-+    Q_UNUSED(password)
-+    return false;
-+#endif
++    m_currentImage = QImage();
++    m_pageLoading = true;
++    startSpinner();
++    Q_EMIT pageLoadingChanged(true);
++    requestPage(0, previewSize());
++    return true;
 +}
 +
 +void QuickLookPdfHandler::cleanup()
 +{
 +    cancelPendingRenders();
-+
-+#ifdef HAVE_POPPLER
-+    m_page.reset();
-+    m_document.reset();
-+    m_bgDocument.reset();
-+#endif
-+
++    m_pdfDoc->close();
 +    m_pageCache.clear();
 +    m_cacheLru.clear();
 +    m_currentImage = QImage();
 +    m_currentPage = 0;
 +    m_totalPages = 0;
-+    m_renderedDpi = 0.0;
 +    m_filePath.clear();
++    m_lastZoomFactor = 1.0;
 +}
 +
 +void QuickLookPdfHandler::cancelPendingRenders()
 +{
-+    m_hiResRenderWatcher.cancel();
-+    m_hiResRenderWatcher.waitForFinished();
-+    m_renderPending = false;
-+
-+    m_pageRenderWatcher.cancel();
-+    m_pageRenderWatcher.waitForFinished();
-+    m_pageRenderPending = false;
-+
-+    stopSpinner();
 +    m_hiResRenderTimer->stop();
++    m_renderPending = false;
++    // QPdfPageRenderer has no cancel API — stale renders are silently ignored
++    // in onPageRendered via request ID tracking.
++    stopSpinner();
 +}
 +
 +void QuickLookPdfHandler::setDisplayArea(int width, int height, qreal devicePixelRatio)
@@ -2339,27 +2541,12 @@ index 000000000..d2849f039
 +
 +void QuickLookPdfHandler::scheduleHiResRerender(qreal zoomFactor)
 +{
-+#ifdef HAVE_POPPLER
 +    m_lastZoomFactor = zoomFactor;
-+
-+    if (!m_page) {
-+        return;
-+    }
-+    const qreal baseDpi = computeDisplayDpi(m_page->pageSizeF());
-+    const qreal targetDpi = qBound(baseDpi, baseDpi * zoomFactor, MaxDpi);
-+    const qreal ratio = targetDpi / m_renderedDpi;
-+    if (ratio > 0.85 && ratio < 1.15) {
-+        return;
-+    }
 +    m_hiResRenderTimer->start(RerenderDelayMs);
-+#else
-+    Q_UNUSED(zoomFactor)
-+#endif
 +}
 +
 +void QuickLookPdfHandler::navigatePage(int direction)
 +{
-+#ifdef HAVE_POPPLER
 +    if (m_totalPages <= 1) {
 +        return;
 +    }
@@ -2369,40 +2556,35 @@ index 000000000..d2849f039
 +        return;
 +    }
 +
-+    if (m_pageRenderPending || m_pageLoading) {
++    if (m_pageLoading) {
 +        return;
 +    }
 +
 +    m_hiResRenderTimer->stop();
-+
 +    m_currentPage = newPage;
-+    m_page = m_document->page(newPage);
 +    updateStatusText();
 +
-+    // Check cache
-+    const QImage cached = cacheLookup(newPage);
-+    if (!cached.isNull()) {
++    const CachedPage cached = cacheLookup(newPage);
++    if (!cached.image.isNull()) {
 +        const QImage oldImage = m_currentImage;
-+        m_currentImage = cached;
-+        m_renderedDpi = BaseDpi;
-+
++        m_currentImage = cached.image;
 +        Q_EMIT crossfadeReady(m_currentImage, oldImage);
 +        m_hiResRenderTimer->start(PageRenderDelayMs);
-+        prefetchAdjacentPages();
 +        Q_EMIT requestUpdate();
 +        return;
 +    }
 +
-+    // Not cached — async render with spinner
++    // Not cached — request preview render with spinner
 +    m_pageLoading = true;
 +    startSpinner();
 +    Q_EMIT pageLoadingChanged(true);
-+    renderPageAsync(newPage);
++    requestPage(newPage, previewSize());
 +    Q_EMIT requestUpdate();
-+#else
-+    Q_UNUSED(direction)
-+#endif
 +}
++
++// ---------------------------------------------------------------------------
++// Getters
++// ---------------------------------------------------------------------------
 +
 +int QuickLookPdfHandler::currentPage() const
 +{
@@ -2419,6 +2601,11 @@ index 000000000..d2849f039
 +    return m_pageLoading;
 +}
 +
++bool QuickLookPdfHandler::isHiResRendering() const
++{
++    return m_renderPending;
++}
++
 +qreal QuickLookPdfHandler::spinnerAngle() const
 +{
 +    return m_spinnerAngle;
@@ -2432,216 +2619,175 @@ index 000000000..d2849f039
 +    return QStringLiteral(" — 1 page");
 +}
 +
-+void QuickLookPdfHandler::renderPage(int pageIndex)
++QSizeF QuickLookPdfHandler::pageLogicalSize() const
 +{
-+#ifdef HAVE_POPPLER
-+    if (!m_document || pageIndex < 0 || pageIndex >= m_totalPages) {
-+        return;
++    if (m_pdfDoc && m_pdfDoc->status() == QPdfDocument::Status::Ready) {
++        return m_pdfDoc->pagePointSize(m_currentPage);
 +    }
++    return {};
++}
 +
-+    m_currentPage = pageIndex;
++// ---------------------------------------------------------------------------
++// Private — render requests
++// ---------------------------------------------------------------------------
 +
-+    const QImage cached = cacheLookup(pageIndex);
-+    if (!cached.isNull()) {
-+        m_currentImage = cached;
-+        m_renderedDpi = BaseDpi;
-+        updateStatusText();
-+        Q_EMIT contentReady(m_currentImage);
-+        return;
++void QuickLookPdfHandler::requestPage(int pageIndex, QSize size)
++{
++    QPdfDocumentRenderOptions opts;
++    m_previewRequestId = m_pdfRenderer->requestPage(pageIndex, size, opts);
++}
++
++void QuickLookPdfHandler::requestHiRes(int pageIndex, QSize fullSize, QRect clipRect)
++{
++    QPdfDocumentRenderOptions opts;
++    if (!clipRect.isNull()) {
++        opts.setScaledSize(fullSize);
++        opts.setScaledClipRect(clipRect);
 +    }
++    const QSize renderSize = clipRect.isNull() ? fullSize : clipRect.size();
++    m_hiResRequestId = m_pdfRenderer->requestPage(pageIndex, renderSize, opts);
++}
 +
-+    m_page = m_document->page(pageIndex);
-+    if (!m_page) {
-+        return;
-+    }
++// ---------------------------------------------------------------------------
++// Private — render callbacks
++// ---------------------------------------------------------------------------
 +
-+    const QSizeF pageSize = m_page->pageSizeF();
-+    const qreal dpi = computeDisplayDpi(pageSize);
-+    const QImage image = m_page->renderToImage(dpi, dpi);
++void QuickLookPdfHandler::onPageRendered(int page, QSize imageSize, const QImage &image, QPdfDocumentRenderOptions options, quint64 requestId)
++{
++    Q_UNUSED(imageSize)
++    Q_UNUSED(options)
++
 +    if (image.isNull()) {
 +        return;
 +    }
 +
-+    m_currentImage = image;
-+    m_renderedDpi = dpi;
-+    updateStatusText();
-+    Q_EMIT contentReady(m_currentImage);
-+#else
-+    Q_UNUSED(pageIndex)
-+#endif
-+}
-+
-+void QuickLookPdfHandler::renderPageAsync(int pageIndex)
-+{
-+#ifdef HAVE_POPPLER
-+    if (m_pageRenderPending || m_renderPending || !m_bgDocument) {
-+        return;
-+    }
-+
-+    if (m_pageCache.contains(pageIndex)) {
-+        return;
-+    }
-+
-+    m_pageRenderPending = true;
-+    m_pageRenderTargetPage = pageIndex;
-+
-+    std::shared_ptr<Poppler::Document> bgDoc = m_bgDocument;
-+    const qreal dpi = computeDisplayDpi(m_page ? m_page->pageSizeF() : QSizeF(595, 842));
-+    m_pageRenderWatcher.setFuture(QtConcurrent::run([bgDoc, pageIndex, dpi]() -> QImage {
-+        auto pg = bgDoc->page(pageIndex);
-+        if (!pg) {
-+            return {};
-+        }
-+        return pg->renderToImage(dpi, dpi);
-+    }));
-+#else
-+    Q_UNUSED(pageIndex)
-+#endif
-+}
-+
-+void QuickLookPdfHandler::onPageRenderFinished()
-+{
-+    m_pageRenderPending = false;
-+
-+    if (m_pageRenderWatcher.isCanceled()) {
-+        return;
-+    }
-+
-+    const QImage image = m_pageRenderWatcher.result();
-+    if (image.isNull()) {
-+        return;
-+    }
-+
-+    const int targetPage = m_pageRenderTargetPage;
-+    cacheInsert(targetPage, image);
-+
-+    if (targetPage == m_currentPage) {
-+        if (m_pageLoading) {
-+            stopSpinner();
-+            Q_EMIT pageLoadingChanged(false);
-+        }
-+
++    if (requestId == m_previewRequestId && page == m_currentPage) {
++        // Preview render complete
++        const bool isFirstLoad = m_currentImage.isNull();
 +        const QImage oldImage = m_currentImage;
 +        m_currentImage = image;
-+        m_renderedDpi = BaseDpi;
 +
-+        Q_EMIT crossfadeReady(m_currentImage, oldImage);
++        stopSpinner();
++        Q_EMIT pageLoadingChanged(false);
++
++        cacheInsert(page, image);
++
++        if (isFirstLoad) {
++            updateStatusText();
++            Q_EMIT contentReady(m_currentImage);
++            Q_EMIT asyncLoadReady(LoadResult::Success);
++        } else {
++            Q_EMIT crossfadeReady(m_currentImage, oldImage);
++        }
++
++        // Schedule hi-res upgrade
 +        m_hiResRenderTimer->start(PageRenderDelayMs);
-+        Q_EMIT requestUpdate();
-+    }
++        prefetchAdjacentPages();
 +
-+    prefetchAdjacentPages();
++    } else if (requestId == m_hiResRequestId && page == m_currentPage) {
++        // Hi-res render complete
++        m_renderPending = false;
++        const QImage oldImage = m_currentImage;
++        m_currentImage = image;
++        Q_EMIT crossfadeReady(m_currentImage, oldImage);
++        Q_EMIT requestUpdate();
++
++    } else if (page != m_currentPage) {
++        // Prefetch render for an adjacent page — cache it silently
++        cacheInsert(page, image);
++    }
 +}
++
++// ---------------------------------------------------------------------------
++// Private — hi-res timer
++// ---------------------------------------------------------------------------
 +
 +void QuickLookPdfHandler::onHiResTimerTimeout()
 +{
-+    if (m_renderPending || m_pageRenderPending) {
++    if (m_renderPending || m_pageLoading) {
 +        m_hiResRenderTimer->start(RerenderDelayMs);
 +        return;
 +    }
 +
-+#ifdef HAVE_POPPLER
-+    if (!m_page) {
-+        return;
-+    }
-+
-+    const qreal baseDpi = computeDisplayDpi(m_page->pageSizeF());
-+
-+    if (m_renderedDpi < baseDpi && qFuzzyCompare(m_lastZoomFactor, 1.0)) {
-+        renderPageAsync(m_currentPage);
-+        return;
-+    }
-+
-+    const qreal targetDpi = qBound(baseDpi, baseDpi * m_lastZoomFactor, MaxDpi);
-+    const qreal ratio = targetDpi / m_renderedDpi;
-+    if (ratio > 0.85 && ratio < 1.15) {
-+        return;
-+    }
-+
-+    m_renderTargetDpi = targetDpi;
 +    m_renderPending = true;
-+    m_renderPageIndex = m_currentPage;
++    Q_EMIT hiResRenderStarted();
 +
-+    const qreal dpi = targetDpi;
-+    const int pageIndex = m_currentPage;
-+
-+    if (m_bgDocument) {
-+        std::shared_ptr<Poppler::Document> bgDoc = m_bgDocument;
-+        m_hiResRenderWatcher.setFuture(QtConcurrent::run([bgDoc, dpi, pageIndex]() -> QImage {
-+            auto pg = bgDoc->page(pageIndex);
-+            if (!pg) {
-+                return {};
-+            }
-+            return pg->renderToImage(dpi, dpi);
-+        }));
++    if (m_lastZoomFactor > 1.0) {
++        const QSize full = zoomSize(m_lastZoomFactor);
++        const QSize display = displaySize();
++        const int clipW = qMin(static_cast<int>(display.width() * 1.2), full.width());
++        const int clipH = qMin(static_cast<int>(display.height() * 1.2), full.height());
++        const int clipX = qMax(0, (full.width() - clipW) / 2);
++        const int clipY = qMax(0, (full.height() - clipH) / 2);
++        requestHiRes(m_currentPage, full, QRect(clipX, clipY, clipW, clipH));
 +    } else {
-+        const QString filePath = m_filePath;
-+        m_hiResRenderWatcher.setFuture(QtConcurrent::run([filePath, dpi, pageIndex]() -> QImage {
-+            auto doc = Poppler::Document::load(filePath);
-+            if (!doc) {
-+                return {};
-+            }
-+            doc->setRenderHint(Poppler::Document::Antialiasing);
-+            doc->setRenderHint(Poppler::Document::TextAntialiasing);
-+            doc->setRenderHint(Poppler::Document::ThinLineShape);
-+            doc->setRenderHint(Poppler::Document::OverprintPreview);
-+            auto pg = doc->page(pageIndex);
-+            if (!pg) {
-+                return {};
-+            }
-+            return pg->renderToImage(dpi, dpi);
-+        }));
++        requestHiRes(m_currentPage, displaySize());
 +    }
-+#endif
 +}
 +
-+void QuickLookPdfHandler::onHiResRenderFinished()
-+{
-+    m_renderPending = false;
-+
-+    if (m_hiResRenderWatcher.isCanceled()) {
-+        return;
-+    }
-+
-+    if (m_renderPageIndex != m_currentPage) {
-+        return;
-+    }
-+
-+    const QImage image = m_hiResRenderWatcher.result();
-+    if (image.isNull()) {
-+        return;
-+    }
-+
-+    const QImage oldImage = m_currentImage;
-+    m_currentImage = image;
-+    m_renderedDpi = m_renderTargetDpi;
-+
-+    Q_EMIT crossfadeReady(m_currentImage, oldImage);
-+    Q_EMIT requestUpdate();
-+}
++// ---------------------------------------------------------------------------
++// Private — prefetch
++// ---------------------------------------------------------------------------
 +
 +void QuickLookPdfHandler::prefetchAdjacentPages()
 +{
-+#ifdef HAVE_POPPLER
-+    if (m_pageRenderPending) {
++    if (m_pageLoading || m_renderPending) {
 +        return;
 +    }
 +
 +    const int next = m_currentPage + 1;
 +    const int prev = m_currentPage - 1;
 +
-+    if (next < m_totalPages && !m_pageCache.contains(next)) {
-+        renderPageAsync(next);
-+    } else if (prev >= 0 && !m_pageCache.contains(prev)) {
-+        renderPageAsync(prev);
++    if (next < m_totalPages && cacheLookup(next).image.isNull()) {
++        requestPage(next, previewSize());
++    } else if (prev >= 0 && cacheLookup(prev).image.isNull()) {
++        requestPage(prev, previewSize());
 +    }
-+#endif
 +}
++
++// ---------------------------------------------------------------------------
++// Private — size helpers
++// ---------------------------------------------------------------------------
++
++QSize QuickLookPdfHandler::previewSize() const
++{
++    const int availW = m_areaWidth - 2 * ContentPadding;
++    const int availH = m_areaHeight - 2 * ContentPadding - BottomExtraSpace;
++    if (availW <= 0 || availH <= 0) {
++        return QSize(800, 600);
++    }
++    // Half resolution for fast initial render
++    return QSize(availW / 2, availH / 2);
++}
++
++QSize QuickLookPdfHandler::displaySize() const
++{
++    const int availW = m_areaWidth - 2 * ContentPadding;
++    const int availH = m_areaHeight - 2 * ContentPadding - BottomExtraSpace;
++    if (availW <= 0 || availH <= 0) {
++        return QSize(800, 600);
++    }
++    return QSize(static_cast<int>(availW * m_devicePixelRatio), static_cast<int>(availH * m_devicePixelRatio));
++}
++
++QSize QuickLookPdfHandler::zoomSize(qreal zoomFactor) const
++{
++    const QSize base = displaySize();
++    return QSize(static_cast<int>(base.width() * zoomFactor), static_cast<int>(base.height() * zoomFactor));
++}
++
++// ---------------------------------------------------------------------------
++// Private — status text
++// ---------------------------------------------------------------------------
 +
 +void QuickLookPdfHandler::updateStatusText()
 +{
 +    Q_EMIT statusTextChanged(statusText());
 +}
++
++// ---------------------------------------------------------------------------
++// Private — spinner
++// ---------------------------------------------------------------------------
 +
 +void QuickLookPdfHandler::startSpinner()
 +{
@@ -2668,42 +2814,16 @@ index 000000000..d2849f039
 +    m_spinnerAngle = 0.0;
 +}
 +
-+#ifdef HAVE_POPPLER
-+void QuickLookPdfHandler::applyRenderHints(Poppler::Document *doc)
-+{
-+    doc->setRenderHint(Poppler::Document::Antialiasing);
-+    doc->setRenderHint(Poppler::Document::TextAntialiasing);
-+    doc->setRenderHint(Poppler::Document::ThinLineShape);
-+    doc->setRenderHint(Poppler::Document::OverprintPreview);
-+}
-+#endif
-+
-+qreal QuickLookPdfHandler::computeDisplayDpi(const QSizeF &pageSizePoints) const
-+{
-+    if (pageSizePoints.width() <= 0 || pageSizePoints.height() <= 0) {
-+        return BaseDpi;
-+    }
-+
-+    int areaW = m_areaWidth - 2 * ContentPadding;
-+    int areaH = m_areaHeight - 2 * ContentPadding - BottomExtraSpace;
-+
-+    if (areaW <= 0 || areaH <= 0) {
-+        return BaseDpi;
-+    }
-+
-+    QSizeF displaySize(pageSizePoints);
-+    displaySize.scale(areaW, areaH, Qt::KeepAspectRatio);
-+
-+    const qreal dpi = (displaySize.width() * m_devicePixelRatio) / (pageSizePoints.width() / 72.0);
-+    return qBound(72.0, dpi, MaxDpi);
-+}
++// ---------------------------------------------------------------------------
++// Private — LRU page cache
++// ---------------------------------------------------------------------------
 +
 +void QuickLookPdfHandler::cacheInsert(int pageIndex, const QImage &image)
 +{
 +    if (m_pageCache.contains(pageIndex)) {
 +        m_cacheLru.removeOne(pageIndex);
 +        m_cacheLru.prepend(pageIndex);
-+        m_pageCache[pageIndex] = image;
++        m_pageCache[pageIndex] = {image};
 +        return;
 +    }
 +
@@ -2712,27 +2832,25 @@ index 000000000..d2849f039
 +        m_pageCache.remove(evicted);
 +    }
 +
-+    m_pageCache.insert(pageIndex, image);
++    m_pageCache.insert(pageIndex, {image});
 +    m_cacheLru.prepend(pageIndex);
 +}
 +
-+QImage QuickLookPdfHandler::cacheLookup(int pageIndex)
++QuickLookPdfHandler::CachedPage QuickLookPdfHandler::cacheLookup(int pageIndex)
 +{
 +    if (!m_pageCache.contains(pageIndex)) {
 +        return {};
 +    }
-+
 +    m_cacheLru.removeOne(pageIndex);
 +    m_cacheLru.prepend(pageIndex);
-+
 +    return m_pageCache.value(pageIndex);
 +}
 diff --git a/src/views/quicklook/quicklookpdfhandler.h b/src/views/quicklook/quicklookpdfhandler.h
 new file mode 100644
-index 000000000..16e5dcc71
+index 000000000..95d9dd018
 --- /dev/null
 +++ b/src/views/quicklook/quicklookpdfhandler.h
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,111 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -2742,24 +2860,16 @@ index 000000000..16e5dcc71
 +#ifndef QUICKLOOKPDFHANDLER_H
 +#define QUICKLOOKPDFHANDLER_H
 +
-+#include <QFutureWatcher>
 +#include <QHash>
 +#include <QImage>
 +#include <QList>
 +#include <QObject>
++#include <QPdfDocument>
++#include <QPdfDocumentRenderOptions>
++#include <QPdfPageRenderer>
 +#include <QSizeF>
 +
-+#include <memory>
-+
 +class QTimer;
-+
-+#ifdef HAVE_POPPLER
-+namespace Poppler
-+{
-+class Document;
-+class Page;
-+}
-+#endif
 +
 +class QuickLookPdfHandler : public QObject
 +{
@@ -2775,7 +2885,7 @@ index 000000000..16e5dcc71
 +    explicit QuickLookPdfHandler(QObject *parent = nullptr);
 +    ~QuickLookPdfHandler() override;
 +
-+    LoadResult load(const QString &filePath);
++    void loadAsync(const QString &filePath);
 +    bool unlockWithPassword(const QString &password);
 +    void cleanup();
 +    void cancelPendingRenders();
@@ -2787,8 +2897,10 @@ index 000000000..16e5dcc71
 +    int currentPage() const;
 +    int totalPages() const;
 +    bool isPageLoading() const;
++    bool isHiResRendering() const;
 +    qreal spinnerAngle() const;
 +    QString statusText() const;
++    QSizeF pageLogicalSize() const;
 +
 +Q_SIGNALS:
 +    void contentReady(const QImage &image);
@@ -2796,68 +2908,54 @@ index 000000000..16e5dcc71
 +    void statusTextChanged(const QString &text);
 +    void pageLoadingChanged(bool loading);
 +    void requestUpdate();
++    void asyncLoadReady(LoadResult result);
++    void hiResRenderStarted();
 +
 +private:
 +    static constexpr int CacheMaxPages = 5;
-+    static constexpr qreal FastDpi = 216.0;
-+    static constexpr qreal BaseDpi = 288.0;
-+    static constexpr qreal MaxDpi = 600.0;
 +    static constexpr int RerenderDelayMs = 200;
 +    static constexpr int PageRenderDelayMs = 50;
 +
-+    void renderPage(int pageIndex);
-+    void renderPageAsync(int pageIndex);
-+    void onPageRenderFinished();
-+    void onHiResRenderFinished();
++    void requestPage(int pageIndex, QSize size);
++    void requestHiRes(int pageIndex, QSize fullSize, QRect clipRect = {});
++    void onPageRendered(int page, QSize imageSize, const QImage &image, QPdfDocumentRenderOptions options, quint64 requestId);
++    QSize previewSize() const;
++    QSize displaySize() const;
++    QSize zoomSize(qreal zoomFactor) const;
++
 +    void onHiResTimerTimeout();
 +    void prefetchAdjacentPages();
 +    void updateStatusText();
 +    void startSpinner();
 +    void stopSpinner();
-+    qreal computeDisplayDpi(const QSizeF &pageSizePoints) const;
 +
++    struct CachedPage {
++        QImage image;
++    };
 +    void cacheInsert(int pageIndex, const QImage &image);
-+    QImage cacheLookup(int pageIndex);
++    CachedPage cacheLookup(int pageIndex);
 +
-+#ifdef HAVE_POPPLER
-+    static void applyRenderHints(Poppler::Document *doc);
-+#endif
-+
-+#ifdef HAVE_POPPLER
-+    std::unique_ptr<Poppler::Document> m_document;
-+    std::unique_ptr<Poppler::Page> m_page;
-+    std::shared_ptr<Poppler::Document> m_bgDocument;
-+#endif
++    QPdfDocument *m_pdfDoc = nullptr;
++    QPdfPageRenderer *m_pdfRenderer = nullptr;
++    quint64 m_previewRequestId = 0;
++    quint64 m_hiResRequestId = 0;
 +
 +    QString m_filePath;
 +    QImage m_currentImage;
 +    int m_currentPage = 0;
 +    int m_totalPages = 0;
-+    qreal m_renderedDpi = 0.0;
 +
-+    // Display area for DPI computation
 +    int m_areaWidth = 0;
 +    int m_areaHeight = 0;
 +    qreal m_devicePixelRatio = 1.0;
 +
-+    // Page cache (LRU)
-+    QHash<int, QImage> m_pageCache;
++    QHash<int, CachedPage> m_pageCache;
 +    QList<int> m_cacheLru;
 +
-+    // Async page rendering
-+    QFutureWatcher<QImage> m_pageRenderWatcher;
-+    int m_pageRenderTargetPage = -1;
-+    bool m_pageRenderPending = false;
-+
-+    // Hi-res rerendering
-+    QFutureWatcher<QImage> m_hiResRenderWatcher;
 +    QTimer *m_hiResRenderTimer = nullptr;
-+    qreal m_renderTargetDpi = 0.0;
-+    int m_renderPageIndex = 0;
 +    bool m_renderPending = false;
 +    qreal m_lastZoomFactor = 1.0;
 +
-+    // Spinner
 +    bool m_pageLoading = false;
 +    qreal m_spinnerAngle = 0.0;
 +    QTimer *m_spinnerTimer = nullptr;
