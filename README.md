@@ -21,12 +21,14 @@ No external apps. No popups. Everything happens inside Dolphin.
 
 - **Automatic GPU detection** — probes OpenGL 2.1+ / ES 2.0+ at startup, falls back to software if unavailable (llvmpipe, softpipe, swrast are detected and bypassed)
 - **GLSL shader pipeline** — rounded rectangle SDF masking, Gaussian 3x3 unsharp mask sharpening (strength 0.2), crossfade transitions, and text overlay — all in a single fragment shader pass
-- **Software fallback** — pure QPainter rendering path provides identical visuals on systems without GPU support
+- **Trilinear mipmapping** — full mipmap chain with `LinearMipMapLinear` filtering for smooth downscaling at any zoom level
+- **4x anisotropic filtering** — reduces aliasing when images are displayed smaller than their native resolution
+- **Software fallback** — pure QPainter rendering path with `SmoothPixmapTransform` provides identical visuals on systems without GPU support
 
 ### Image Preview
 
 - **All Qt-supported formats** — PNG, JPEG, GIF, BMP, WebP, SVG, TIFF, ICO, AVIF, HEIF/HEIC, JXL, and more
-- **Transparent PNG support** — alpha channel is preserved and composited over the dark overlay
+- **Transparent image support** — alpha channel is preserved and composited over the dark overlay; drop shadow is automatically disabled for transparent images
 - **Image sharpening** — subtle GPU-accelerated unsharp mask (3x3 Gaussian kernel) for crisp rendering
 - **Large image protection** — images larger than 4K are capped at 3840x2160 to prevent OOM
 - **HEIF/HEIC detection** — warns when files cannot be opened due to missing `libheif` / `qt6-imageformats`
@@ -41,14 +43,16 @@ No external apps. No popups. Everything happens inside Dolphin.
 
 ### PDF Preview (optional — requires Poppler)
 
-- **First page preview** — renders the first page at 216 DPI for instant display
+- **First page preview** — renders the first page at display-fit DPI for instant, sharp display
 - **Multi-page navigation** — browse pages with arrow keys, Page Up/Down, or clickable arrow buttons
 - **Page indicator** — displays "Page X of Y" below the preview
+- **Password-protected PDFs** — prompts for password with up to 3 attempts, then renders normally
+- **High-quality rendering** — Poppler render hints: `Antialiasing`, `TextAntialiasing`, `ThinLineShape` (antialiased thin lines), `OverprintPreview` (accurate color blending)
 - **Async loading** — pages render in a background thread; main UI stays responsive
 - **Loading spinner** — smooth rotating conical gradient animation while pages load
 - **Page cache** — LRU cache holds up to 5 pages with automatic adjacent-page prefetching
 - **Crossfade transitions** — 150ms blend between pages for smooth navigation
-- **Timeout protection** — auto-closes if a page fails to load within 3 seconds
+- **Hi-res re-render** — after initial display, re-renders at higher DPI (up to 600) for zoom clarity
 
 ### Video Preview (optional — requires Qt Multimedia)
 
@@ -195,13 +199,13 @@ The patch adds new files and modifies existing ones in Dolphin's source:
 
 | File | Purpose |
 |------|---------|
-| `src/views/quicklookoverlay.h` | Quick Look overlay widget header |
-| `src/views/quicklookoverlay.cpp` | Overlay logic: content loading, animation, input handling |
-| `src/views/quicklookglrenderer.h` | GPU renderer header (OpenGL) |
-| `src/views/quicklookglrenderer.cpp` | GPU-accelerated rendering via GLSL shaders |
-| `src/views/quicklookrenderer.h` | Abstract renderer base class |
-| `src/views/quicklookswrenderer.h` | Software renderer header |
-| `src/views/quicklookswrenderer.cpp` | CPU-based rendering via QPainter |
+| `src/views/quicklookoverlay.h/cpp` | Overlay orchestrator: content loading, animation, input, zoom |
+| `src/views/quicklookrenderer.h` | Abstract renderer interface (`RenderState` struct) |
+| `src/views/quicklookglrenderer.h/cpp` | GPU renderer: GLSL shader pipeline with mipmaps and anisotropic filtering |
+| `src/views/quicklookswrenderer.h/cpp` | Software renderer: QPainter fallback path |
+| `src/views/quicklookpdfhandler.h/cpp` | PDF engine: Poppler rendering, page cache, async loading, password support |
+| `src/views/quicklookmediahandler.h/cpp` | Media engine: video playback, audio with vinyl/FFT visualization |
+| `src/views/quicklookpainthelpers.h` | Shared paint utilities: PDF arrows, loading spinner |
 
 ### Modified Files
 
@@ -217,19 +221,23 @@ The patch adds new files and modifies existing ones in Dolphin's source:
 ```
 DolphinView
   └── m_topLayout (QVBoxLayout)
-        └── m_container (KItemListContainer)  <- file list lives here
-              └── QuickLookOverlay             <- our overlay, parented to container
-                    ├── QuickLookGLRenderer    <- GPU path (default)
-                    └── QuickLookSWRenderer    <- CPU fallback
+        └── m_container (KItemListContainer)    <- file list lives here
+              └── QuickLookOverlay               <- our overlay, parented to container
+                    ├── QuickLookGLRenderer       <- GPU path (GLSL, mipmaps, aniso)
+                    │   └── QOpenGLWidget          <- GL surface
+                    ├── QuickLookSWRenderer       <- CPU fallback (QPainter)
+                    ├── QuickLookPdfHandler        <- PDF engine (Poppler)
+                    └── QuickLookMediaHandler      <- Video/audio engine (QtMultimedia)
 ```
 
 When a supported file is double-clicked:
 
 1. `DolphinView::slotItemActivated()` checks the MIME type
-2. If it's a supported type, `QuickLookOverlay::showPreview()` is called
-3. The overlay resizes to fill the container and renders the content with a `QPropertyAnimation`
-4. The file list remains underneath — it's just covered by the overlay
-5. Double-click or `Escape` triggers `hidePreview()` which animates back out
+2. If supported, `QuickLookOverlay::showPreview()` routes to the right handler (image / PDF / video / audio)
+3. The overlay resizes to fill the container and animates in (250ms cubic ease-out, scale 0.3→1.0)
+4. Content is uploaded to the renderer (GPU texture or QPixmap) and composited with background, shadow, and label
+5. The file list remains underneath — just covered by the overlay
+6. Double-click or `Escape` triggers `hidePreview()` which animates back out
 
 ## Supported Formats
 
@@ -303,13 +311,19 @@ Audio files display a rotating vinyl record with a real-time FFT spectrum analyz
 
 ## Roadmap
 
-- [x] Inline image preview with animation
-- [x] PDF preview with multi-page navigation
-- [x] Video preview with inline playback
-- [x] Audio preview with vinyl visualization and FFT spectrum
-- [x] GPU-accelerated rendering with software fallback
-- [x] Zoom with scroll wheel and pan
-- [x] HiDPI support
+- [x] Inline image preview with smooth animation
+- [x] PDF preview with multi-page navigation and page cache
+- [x] Password-protected PDF support
+- [x] Video preview with inline playback and looping
+- [x] Audio preview with rotating vinyl and real-time FFT spectrum
+- [x] GPU-accelerated rendering (GLSL) with software fallback (QPainter)
+- [x] Trilinear mipmapping and 4x anisotropic filtering for crisp downscaling
+- [x] High-quality PDF rendering (ThinLineShape, OverprintPreview, antialiased)
+- [x] Zoom with scroll wheel (cursor-centered) and drag-to-pan
+- [x] Progressive hi-res re-render with crossfade transitions
+- [x] HiDPI / multi-DPI display support
+- [x] Transparent image support (alpha compositing, no shadow)
+- [x] Thread-safe async rendering with race condition protection
 - [ ] Submit as upstream KDE Merge Request
 
 ## Contributing

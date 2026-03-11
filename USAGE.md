@@ -121,7 +121,11 @@ When you zoom in, the image is re-rendered at the new zoom level for maximum sha
 
 ### Opening a PDF
 
-Double-click a `.pdf` file. The first page renders at 216 DPI for a quick, sharp preview.
+Double-click a `.pdf` file. The first page renders at display-fit DPI for a sharp preview.
+
+### Password-Protected PDFs
+
+If the PDF is password-protected, a dialog will prompt you to enter the password. You get up to **3 attempts** — after that, the preview is canceled and the file opens with the default application.
 
 ### Multi-Page Documents
 
@@ -235,6 +239,8 @@ Used when a hardware-accelerated OpenGL 2.1+ or ES 2.0+ context is available.
 **Benefits:**
 - Smooth animations at native refresh rate
 - GLSL shader-based image sharpening (3x3 Gaussian unsharp mask)
+- Trilinear mipmapping with full mipmap chain for smooth downscaling
+- 4x anisotropic filtering to eliminate aliasing artifacts
 - Efficient crossfade transitions via multi-texture blending
 - Lower CPU usage during animation
 
