@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dolphin Quick Look — macOS-style Quick Look for KDE Dolphin on Linux</title>
+    <meta name="description" content="Dolphin Quick Look brings macOS-style file preview to KDE Dolphin on Linux. Preview images, PDFs, videos, and audio inline with smooth animations and GPU-accelerated rendering.">
+    <meta name="keywords" content="quick look linux, quicklook kde, quick look dolphin, file preview linux, macos quick look linux, kde dolphin preview, dolphin file manager preview, kde file preview, linux file preview, dolphin quick look, kde quick look, plasma quick look">
+    <meta name="author" content="pir0c0pter0">
+    <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://pir0c0pter0.github.io/dolphin-quicklook/">
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="Dolphin Quick Look — macOS-style Quick Look for KDE Dolphin">
+    <meta property="og:description" content="Preview images, PDFs, videos, and audio inline in KDE Dolphin with smooth animations and GPU-accelerated rendering. No popups, no external apps.">
+    <meta property="og:url" content="https://pir0c0pter0.github.io/dolphin-quicklook/">
+    <meta property="og:image" content="https://raw.githubusercontent.com/pir0c0pter0/dolphin-quicklook/main/demo.gif">
+    <meta property="og:site_name" content="Dolphin Quick Look">
+
+    <!-- Twitter Card -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="Dolphin Quick Look — macOS-style Quick Look for KDE Dolphin">
+    <meta name="twitter:description" content="Preview images, PDFs, videos, and audio inline in KDE Dolphin with smooth animations and GPU-accelerated rendering.">
+    <meta name="twitter:image" content="https://raw.githubusercontent.com/pir0c0pter0/dolphin-quicklook/main/demo.gif">
+
+    <style>
+        *,
+        *::before,
+        *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #1b1e24;
+            --bg-secondary: #22262e;
+            --bg-card: #282c34;
+            --bg-code: #1a1d23;
+            --text-primary: #e8eaed;
+            --text-secondary: #9aa0a8;
+            --text-muted: #6b7280;
+            --accent: #3daee9;
+            --accent-hover: #5bc0f5;
+            --accent-glow: rgba(61, 174, 233, 0.15);
+            --border: #363b44;
+            --border-light: #444a54;
+            --green: #27ae60;
+            --orange: #f39c12;
+            --red: #e74c3c;
+            --radius: 12px;
+            --radius-sm: 8px;
+            --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+            --max-width: 1100px;
+        }
+
+        html {
+            scroll-behavior: smooth;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.7;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        a {
+            color: var(--accent);
+            text-decoration: none;
+            transition: color 0.2s;
+        }
+
+        a:hover {
+            color: var(--accent-hover);
+        }
+
+        /* --- NAV --- */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            background: rgba(27, 30, 36, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .nav-inner {
+            max-width: var(--max-width);
+            margin: 0 auto;
+            padding: 0 24px;
+            height: 56px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .nav-brand {
+            font-weight: 700;
+            font-size: 1.05rem;
+            color: var(--text-primary);
+        }
+
+        .nav-links {
+            display: flex;
+            gap: 28px;
+            list-style: none;
+        }
+
+        .nav-links a {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: color 0.2s;
+        }
+
+        .nav-links a:hover {
+            color: var(--text-primary);
+        }
+
+        /* --- HERO --- */
+        .hero {
+            padding: 140px 24px 80px;
+            text-align: center;
+        }
+
+        .hero-inner {
+            max-width: var(--max-width);
+            margin: 0 auto;
+        }
+
+        .hero h1 {
+            font-size: clamp(2rem, 5vw, 3.2rem);
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            margin-bottom: 16px;
+            line-height: 1.2;
+        }
+
+        .hero h1 .highlight {
+            color: var(--accent);
+        }
+
+        .hero .tagline {
+            font-size: clamp(1rem, 2.5vw, 1.25rem);
+            color: var(--text-secondary);
+            max-width: 640px;
+            margin: 0 auto 40px;
+            line-height: 1.6;
+        }
+
+        .hero-buttons {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            flex-wrap: wrap;
+            margin-bottom: 56px;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            border-radius: var(--radius-sm);
+            font-size: 0.95rem;
+            font-weight: 600;
+            transition: all 0.2s;
+            border: none;
+            cursor: pointer;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+            color: #fff;
+            box-shadow: 0 0 24px var(--accent-glow);
+        }
+
+        .btn-secondary {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover {
+            border-color: var(--border-light);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .demo-container {
+            max-width: 820px;
+            margin: 0 auto;
+            border-radius: var(--radius);
+            overflow: hidden;
+            border: 1px solid var(--border);
+            box-shadow: var(--shadow);
+        }
+
+        .demo-container img {
+            width: 100%;
+            display: block;
+        }
+
+        /* --- SECTIONS --- */
+        section {
+            padding: 80px 24px;
+        }
+
+        .section-inner {
+            max-width: var(--max-width);
+            margin: 0 auto;
+        }
+
+        .section-title {
+            font-size: clamp(1.5rem, 3.5vw, 2.2rem);
+            font-weight: 700;
+            margin-bottom: 12px;
+            letter-spacing: -0.01em;
+        }
+
+        .section-subtitle {
+            color: var(--text-secondary);
+            font-size: 1.05rem;
+            margin-bottom: 48px;
+            max-width: 600px;
+        }
+
+        /* --- FEATURES GRID --- */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .feature-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 28px;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+
+        .feature-card:hover {
+            border-color: var(--border-light);
+            box-shadow: 0 2px 16px rgba(0, 0, 0, 0.2);
+        }
+
+        .feature-icon {
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.3rem;
+            margin-bottom: 16px;
+            background: var(--accent-glow);
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        .feature-card h3 {
+            font-size: 1.1rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .feature-card p {
+            color: var(--text-secondary);
+            font-size: 0.92rem;
+            line-height: 1.6;
+        }
+
+        .feature-tag {
+            display: inline-block;
+            font-size: 0.72rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            padding: 3px 8px;
+            border-radius: 4px;
+            margin-bottom: 12px;
+        }
+
+        .tag-core {
+            background: rgba(39, 174, 96, 0.15);
+            color: var(--green);
+        }
+
+        .tag-optional {
+            background: rgba(243, 156, 18, 0.15);
+            color: var(--orange);
+        }
+
+        .tag-gpu {
+            background: rgba(61, 174, 233, 0.15);
+            color: var(--accent);
+        }
+
+        /* --- INSTALL --- */
+        .install-section {
+            background: var(--bg-secondary);
+        }
+
+        .install-block {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+            max-width: 700px;
+        }
+
+        .install-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 20px;
+            background: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .dot-red { background: var(--red); }
+        .dot-yellow { background: var(--orange); }
+        .dot-green { background: var(--green); }
+
+        .install-header span {
+            margin-left: 8px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            font-family: monospace;
+        }
+
+        .install-code {
+            padding: 24px;
+            font-family: "SF Mono", "Fira Code", "JetBrains Mono", Consolas, monospace;
+            font-size: 0.9rem;
+            line-height: 1.8;
+            color: var(--text-primary);
+            overflow-x: auto;
+        }
+
+        .install-code .comment {
+            color: var(--text-muted);
+        }
+
+        .install-code .cmd {
+            color: var(--green);
+        }
+
+        .install-code .prompt {
+            color: var(--accent);
+            user-select: none;
+        }
+
+        /* --- COMPARISON --- */
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: var(--bg-card);
+            border-radius: var(--radius);
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .comparison-table th,
+        .comparison-table td {
+            padding: 14px 20px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.92rem;
+        }
+
+        .comparison-table th {
+            background: var(--bg-secondary);
+            font-weight: 700;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .comparison-table td:first-child {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .comparison-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .check {
+            color: var(--green);
+            font-weight: 700;
+        }
+
+        .cross {
+            color: var(--red);
+            font-weight: 700;
+        }
+
+        .col-ours {
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        .col-klook {
+            color: var(--text-muted);
+        }
+
+        /* --- SHORTCUTS --- */
+        .shortcuts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+            margin-top: 32px;
+        }
+
+        .shortcut-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+        }
+
+        .shortcut-row span {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        kbd {
+            display: inline-block;
+            padding: 3px 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-light);
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.82rem;
+            color: var(--text-primary);
+        }
+
+        /* --- FOOTER --- */
+        footer {
+            padding: 40px 24px;
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+
+        footer p {
+            color: var(--text-muted);
+            font-size: 0.88rem;
+        }
+
+        footer a {
+            color: var(--text-secondary);
+        }
+
+        /* --- RESPONSIVE --- */
+        @media (max-width: 640px) {
+            .nav-links {
+                gap: 16px;
+            }
+
+            .nav-links a {
+                font-size: 0.82rem;
+            }
+
+            section {
+                padding: 56px 16px;
+            }
+
+            .hero {
+                padding: 120px 16px 56px;
+            }
+
+            .features-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .comparison-table th,
+            .comparison-table td {
+                padding: 10px 12px;
+                font-size: 0.84rem;
+            }
+
+            .shortcuts-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav>
+    <div class="nav-inner">
+        <a href="#" class="nav-brand">Dolphin Quick Look</a>
+        <ul class="nav-links">
+            <li><a href="#features">Features</a></li>
+            <li><a href="#install">Install</a></li>
+            <li><a href="#comparison">Compare</a></li>
+            <li><a href="https://github.com/pir0c0pter0/dolphin-quicklook" target="_blank" rel="noopener">GitHub</a></li>
+        </ul>
+    </div>
+</nav>
+
+<!-- Hero -->
+<header class="hero">
+    <div class="hero-inner">
+        <h1>
+            <span class="highlight">Quick Look</span> for KDE Dolphin
+        </h1>
+        <p class="tagline">
+            macOS-style file preview for Linux. Double-click to preview images, PDFs, videos, and audio — inline, with smooth animations and GPU-accelerated rendering.
+        </p>
+        <div class="hero-buttons">
+            <a href="#install" class="btn btn-primary">Get Started</a>
+            <a href="https://github.com/pir0c0pter0/dolphin-quicklook" class="btn btn-secondary" target="_blank" rel="noopener">View on GitHub</a>
+        </div>
+        <div class="demo-container">
+            <img src="https://raw.githubusercontent.com/pir0c0pter0/dolphin-quicklook/main/demo.gif"
+                 alt="Dolphin Quick Look demo showing inline image preview with smooth animation in KDE Dolphin file manager"
+                 loading="lazy"
+                 width="820"
+                 height="500">
+        </div>
+    </div>
+</header>
+
+<!-- Features -->
+<section id="features">
+    <div class="section-inner">
+        <h2 class="section-title">Features</h2>
+        <p class="section-subtitle">Everything you need for fast file previews, built natively into Dolphin.</p>
+
+        <div class="features-grid">
+            <!-- Images -->
+            <div class="feature-card">
+                <div class="feature-icon">IMG</div>
+                <span class="feature-tag tag-core">Core</span>
+                <h3>Image Preview</h3>
+                <p>PNG, JPEG, WebP, SVG, AVIF, HEIF, JXL, and every format Qt supports. Transparent images composited with alpha. Large images capped at 4K to prevent OOM.</p>
+            </div>
+
+            <!-- PDF -->
+            <div class="feature-card">
+                <div class="feature-icon">PDF</div>
+                <span class="feature-tag tag-optional">Optional</span>
+                <h3>PDF Preview</h3>
+                <p>Multi-page navigation with arrow keys. Password-protected PDF support. LRU page cache, async loading, crossfade transitions, and hi-res re-render on zoom. Powered by Poppler.</p>
+            </div>
+
+            <!-- Video -->
+            <div class="feature-card">
+                <div class="feature-icon">VID</div>
+                <span class="feature-tag tag-optional">Optional</span>
+                <h3>Video Playback</h3>
+                <p>MP4, MKV, WebM, AVI, MOV, and more play inline with looping. First frame extracted as thumbnail, playback starts after animation. Uses Qt Multimedia.</p>
+            </div>
+
+            <!-- Audio -->
+            <div class="feature-card">
+                <div class="feature-icon">AUD</div>
+                <span class="feature-tag tag-optional">Optional</span>
+                <h3>Audio with Vinyl Visualizer</h3>
+                <p>MP3, FLAC, OGG, WAV, and more. Rotating vinyl record with groove details and a real-time 48-bar radial FFT spectrum analyzer. Playback time displayed below.</p>
+            </div>
+
+            <!-- GPU -->
+            <div class="feature-card">
+                <div class="feature-icon">GPU</div>
+                <span class="feature-tag tag-gpu">Performance</span>
+                <h3>GPU-Accelerated Rendering</h3>
+                <p>GLSL shader pipeline with rounded-rectangle SDF masking, unsharp-mask sharpening, trilinear mipmapping, and 4x anisotropic filtering. Automatic software fallback via QPainter.</p>
+            </div>
+
+            <!-- HiDPI -->
+            <div class="feature-card">
+                <div class="feature-icon">DPI</div>
+                <span class="feature-tag tag-gpu">Performance</span>
+                <h3>HiDPI Support</h3>
+                <p>DPI-aware text rendering, physical pixel coordinates in GL shaders, and sharp output on 2x/3x displays. No blurry scaling, no workarounds.</p>
+            </div>
+
+            <!-- Zoom -->
+            <div class="feature-card">
+                <div class="feature-icon">ZM</div>
+                <span class="feature-tag tag-core">Core</span>
+                <h3>Zoom and Pan</h3>
+                <p>Scroll-wheel zoom from 1x to 5x, centered on cursor position. Click-and-drag panning. Right-click to reset. Progressive hi-res re-render at each zoom level.</p>
+            </div>
+
+            <!-- Animation -->
+            <div class="feature-card">
+                <div class="feature-icon">FX</div>
+                <span class="feature-tag tag-core">Core</span>
+                <h3>Smooth Animations</h3>
+                <p>250ms cubic ease-out open animation. Fade-out on close. Frame-driven rendering synced to your monitor refresh rate (60Hz to 240Hz+). Crossfade on content switches.</p>
+            </div>
+
+            <!-- Stability -->
+            <div class="feature-card">
+                <div class="feature-icon">OK</div>
+                <span class="feature-tag tag-core">Core</span>
+                <h3>Rock Solid</h3>
+                <p>Race condition protection on async renders. Stale result discard. Active-state checks. Enum-based video state machine. Null guards everywhere. No crashes on edge cases.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Keyboard Shortcuts -->
+<section style="background: var(--bg-secondary);">
+    <div class="section-inner">
+        <h2 class="section-title">Keyboard Shortcuts</h2>
+        <p class="section-subtitle">Fast, intuitive controls.</p>
+        <div class="shortcuts-grid">
+            <div class="shortcut-row">
+                <span>Open preview</span>
+                <kbd>Double-click</kbd>
+            </div>
+            <div class="shortcut-row">
+                <span>Close preview</span>
+                <kbd>Escape</kbd> / <kbd>Space</kbd> / <kbd>Double-click</kbd>
+            </div>
+            <div class="shortcut-row">
+                <span>Zoom in / out</span>
+                <kbd>Scroll wheel</kbd>
+            </div>
+            <div class="shortcut-row">
+                <span>Pan while zoomed</span>
+                <kbd>Click + Drag</kbd>
+            </div>
+            <div class="shortcut-row">
+                <span>Reset zoom</span>
+                <kbd>Right-click</kbd>
+            </div>
+            <div class="shortcut-row">
+                <span>PDF pages</span>
+                <kbd>Up</kbd> / <kbd>Down</kbd> / <kbd>PgUp</kbd> / <kbd>PgDn</kbd>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Install -->
+<section id="install" class="install-section">
+    <div class="section-inner">
+        <h2 class="section-title">Installation</h2>
+        <p class="section-subtitle">Three commands. Under 5 minutes on a modern machine.</p>
+
+        <div class="install-block">
+            <div class="install-header">
+                <div class="dot dot-red"></div>
+                <div class="dot dot-yellow"></div>
+                <div class="dot dot-green"></div>
+                <span>Terminal</span>
+            </div>
+            <pre class="install-code"><span class="comment"># Clone and install</span>
+<span class="prompt">$</span> <span class="cmd">git clone https://github.com/pir0c0pter0/dolphin-quicklook.git</span>
+<span class="prompt">$</span> <span class="cmd">cd dolphin-quicklook</span>
+<span class="prompt">$</span> <span class="cmd">./install.sh</span>
+
+<span class="comment"># The script clones Dolphin source, applies the patch,</span>
+<span class="comment"># builds it, and optionally installs system-wide.</span></pre>
+        </div>
+
+        <p style="margin-top: 24px; color: var(--text-secondary); font-size: 0.9rem;">
+            Supports <strong>Arch</strong>, <strong>Fedora</strong>, <strong>Ubuntu/Debian</strong>, <strong>openSUSE</strong>, <strong>Void</strong>, and <strong>Gentoo</strong>.
+            See the <a href="https://github.com/pir0c0pter0/dolphin-quicklook#build-dependencies" target="_blank" rel="noopener">README</a> for dependency details.
+        </p>
+    </div>
+</section>
+
+<!-- Comparison -->
+<section id="comparison">
+    <div class="section-inner">
+        <h2 class="section-title">Why not KLook?</h2>
+        <p class="section-subtitle">KLook was the previous Quick Look attempt for KDE. It has been dead since 2020.</p>
+
+        <div style="overflow-x: auto;">
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Feature</th>
+                        <th class="col-ours">Dolphin Quick Look</th>
+                        <th class="col-klook">KLook</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Status</td>
+                        <td><span class="check">Active development</span></td>
+                        <td><span class="cross">Dead since 2020</span></td>
+                    </tr>
+                    <tr>
+                        <td>Toolkit</td>
+                        <td>Qt 6 / KDE Frameworks 6</td>
+                        <td>Qt 4 (EOL)</td>
+                    </tr>
+                    <tr>
+                        <td>Integration</td>
+                        <td><span class="check">Native — built into Dolphin</span></td>
+                        <td>Separate application (popup window)</td>
+                    </tr>
+                    <tr>
+                        <td>Rendering</td>
+                        <td><span class="check">GPU (GLSL) + software fallback</span></td>
+                        <td>Software only</td>
+                    </tr>
+                    <tr>
+                        <td>Animations</td>
+                        <td><span class="check">Frame-driven, monitor-synced</span></td>
+                        <td>Basic transitions</td>
+                    </tr>
+                    <tr>
+                        <td>Image formats</td>
+                        <td><span class="check">All Qt-supported (incl. AVIF, HEIF, JXL)</span></td>
+                        <td>Basic (PNG, JPEG)</td>
+                    </tr>
+                    <tr>
+                        <td>PDF support</td>
+                        <td><span class="check">Multi-page, cache, password, async</span></td>
+                        <td><span class="cross">No</span></td>
+                    </tr>
+                    <tr>
+                        <td>Video support</td>
+                        <td><span class="check">Inline playback with looping</span></td>
+                        <td>Basic playback</td>
+                    </tr>
+                    <tr>
+                        <td>Audio visualization</td>
+                        <td><span class="check">Vinyl + real-time FFT spectrum</span></td>
+                        <td><span class="cross">No</span></td>
+                    </tr>
+                    <tr>
+                        <td>Zoom</td>
+                        <td><span class="check">1x-5x, cursor-centered, pan</span></td>
+                        <td><span class="cross">No</span></td>
+                    </tr>
+                    <tr>
+                        <td>HiDPI</td>
+                        <td><span class="check">Full support</span></td>
+                        <td><span class="cross">No</span></td>
+                    </tr>
+                    <tr>
+                        <td>License</td>
+                        <td>GPL-2.0-or-later</td>
+                        <td>GPL-2.0</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+</section>
+
+<!-- CTA -->
+<section style="background: var(--bg-secondary); text-align: center;">
+    <div class="section-inner">
+        <h2 class="section-title">Ready to try it?</h2>
+        <p class="section-subtitle" style="margin: 12px auto 32px;">Give your file manager the Quick Look it deserves.</p>
+        <div class="hero-buttons">
+            <a href="https://github.com/pir0c0pter0/dolphin-quicklook" class="btn btn-primary" target="_blank" rel="noopener">View on GitHub</a>
+            <a href="https://github.com/pir0c0pter0/dolphin-quicklook/issues" class="btn btn-secondary" target="_blank" rel="noopener">Report an Issue</a>
+        </div>
+    </div>
+</section>
+
+<!-- Footer -->
+<footer>
+    <p>
+        <strong>Dolphin Quick Look</strong> &mdash; GPL-2.0-or-later &mdash;
+        Built by <a href="https://github.com/pir0c0pter0" target="_blank" rel="noopener">pir0c0pter0</a>
+        &mdash; Powered by KDE Frameworks 6 and Qt 6
+    </p>
+</footer>
+
+<!-- Structured Data -->
+<script type="application/ld+json">
+{
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Dolphin Quick Look",
+    "description": "macOS-style Quick Look for KDE Dolphin on Linux. Preview images, PDFs, videos, and audio inline with smooth animations and GPU-accelerated rendering.",
+    "applicationCategory": "DesktopEnhancement",
+    "operatingSystem": "Linux",
+    "url": "https://pir0c0pter0.github.io/dolphin-quicklook/",
+    "downloadUrl": "https://github.com/pir0c0pter0/dolphin-quicklook",
+    "softwareVersion": "1.0",
+    "license": "https://opensource.org/licenses/GPL-2.0",
+    "author": {
+        "@type": "Person",
+        "name": "pir0c0pter0",
+        "url": "https://github.com/pir0c0pter0"
+    },
+    "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+    }
+}
+</script>
+
+</body>
+</html>
