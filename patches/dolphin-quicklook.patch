@@ -266,7 +266,7 @@ new file mode 100644
 index 000000000..783b19b7c
 --- /dev/null
 +++ b/src/views/quicklook/quicklookmediahandler.cpp
-@@ -0,0 +1,600 @@
+@@ -0,0 +1,612 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -555,6 +555,9 @@ index 000000000..783b19b7c
 +
 +    connect(m_audioDecoder, &QAudioDecoder::bufferReady, this, [this]() {
 +        if (m_audioSamples.size() >= MaxAudioDecodeSamples) {
++            // Drain and stop — prevents internal buffer queue from growing unbounded on long files
++            m_audioDecoder->stop();
++            m_audioDecodingDone = true;
 +            return;
 +        }
 +        const QAudioBuffer buffer = m_audioDecoder->read();
@@ -636,7 +639,8 @@ index 000000000..783b19b7c
 +    m_audioSamples.clear();
 +    m_audioSamples.squeeze();
 +    m_audioFrame = QImage();
-+    m_vinylImage = QImage();
++    // Keep m_vinylImage cached across audio previews — it's ~2.5 MB of QPainter work
++    // and only gets released when the handler itself is destroyed.
 +    m_smoothedSpectrum.clear();
 +    m_smoothedSpectrum.squeeze();
 +    m_audioDecodingDone = false;
@@ -690,7 +694,10 @@ index 000000000..783b19b7c
 +void QuickLookMediaHandler::setClosing()
 +{
 +    m_phase = Phase::Closing;
-+    pause();
++    // Release the media pipeline right away. The overlay keeps the last rendered
++    // frame in its own QImage/QPixmap for the hide animation, so we don't need to
++    // keep QMediaPlayer/QVideoSink/QAudioDecoder alive during fade-out.
++    cleanup();
 +}
 +
 +QuickLookMediaHandler::ContentType QuickLookMediaHandler::contentType() const
@@ -808,6 +815,11 @@ index 000000000..783b19b7c
 +{
 +    QVideoFrame f = frame;
 +    if (!f.isValid()) {
++        return;
++    }
++
++    // Don't waste CPU decoding frames that will never be shown.
++    if (m_phase == Phase::Closing) {
 +        return;
 +    }
 +
@@ -994,7 +1006,7 @@ new file mode 100644
 index 000000000..bc20f884b
 --- /dev/null
 +++ b/src/views/quicklook/quicklookoverlay.cpp
-@@ -0,0 +1,1229 @@
+@@ -0,0 +1,1246 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -1127,15 +1139,10 @@ index 000000000..bc20f884b
 +                }
 +            }
 +            // Failed to unlock — close overlay
-+            m_active = false;
-+            m_pdfHandler->cleanup();
-+            hide();
-+            Q_EMIT previewClosed();
++            closeImmediately();
 +        } else {
 +            // Load failed — close overlay
-+            m_active = false;
-+            hide();
-+            Q_EMIT previewClosed();
++            closeImmediately();
 +        }
 +    });
 +#endif
@@ -1165,9 +1172,7 @@ index 000000000..bc20f884b
 +        startShowAnimation();
 +    });
 +    connect(m_mediaHandler, &QuickLookMediaHandler::loadFailed, this, [this]() {
-+        m_active = false;
-+        hide();
-+        Q_EMIT previewClosed();
++        closeImmediately();
 +    });
 +    connect(m_mediaHandler, &QuickLookMediaHandler::statusTextChanged, this, [this](const QString &text) {
 +        m_statusText = text;
@@ -1468,6 +1473,30 @@ index 000000000..bc20f884b
 +#endif
 +
 +    startHideAnimation();
++}
++
++void QuickLookOverlay::closeImmediately()
++{
++    m_active = false;
++    m_animating = false;
++    m_frameTimer->stop();
++    m_imageRenderWatcher.cancel();
++    m_imageRenderPending = false;
++    m_hiResRenderTimer->stop();
++    m_contentImage = QImage();
++    m_pixmap = QPixmap();
++    m_crossfadeOldPixmap = QPixmap();
++    m_crossfadeOldImage = QImage();
++    m_hiResLowResImage = QImage();
++#ifdef HAVE_QTPDF
++    m_pdfHandler->cleanup();
++    m_pdfPageLogicalSize = QSizeF();
++#endif
++#ifdef HAVE_QTMULTIMEDIA
++    m_mediaHandler->cleanup();
++#endif
++    hide();
++    Q_EMIT previewClosed();
 +}
 +
 +bool QuickLookOverlay::isPreviewActive() const
@@ -2229,7 +2258,7 @@ new file mode 100644
 index 000000000..06cffe5c2
 --- /dev/null
 +++ b/src/views/quicklook/quicklookoverlay.h
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,173 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -2299,6 +2328,7 @@ index 000000000..06cffe5c2
 +
 +    void startShowAnimation();
 +    void startHideAnimation();
++    void closeImmediately();
 +    QRect scaledContentRect() const;
 +
 +    bool loadImage(const QString &filePath);
@@ -2407,7 +2437,7 @@ new file mode 100644
 index 000000000..1a7447b30
 --- /dev/null
 +++ b/src/views/quicklook/quicklookpdfhandler.cpp
-@@ -0,0 +1,437 @@
+@@ -0,0 +1,439 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Mario STJr
 + *
@@ -2521,6 +2551,8 @@ index 000000000..1a7447b30
 +    m_totalPages = 0;
 +    m_filePath.clear();
 +    m_lastZoomFactor = 1.0;
++    m_previewRequestId = 0;
++    m_hiResRequestId = 0;
 +}
 +
 +void QuickLookPdfHandler::cancelPendingRenders()
