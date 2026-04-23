@@ -14,6 +14,15 @@ PATCH_FILE="$SCRIPT_DIR/patches/dolphin-quicklook.patch"
 BUILD_DIR="$SCRIPT_DIR/build"
 DOLPHIN_DIR="$BUILD_DIR/dolphin"
 
+# Pin upstream Dolphin to a known-good commit. The patch targets Dolphin master;
+# bump this when regenerating the patch for a newer upstream state.
+DOLPHIN_REPO="https://invent.kde.org/system/dolphin.git"
+DOLPHIN_COMMIT="b12eada7126627c43e463b1c1fff191233485d00"
+
+# Prefixes we allow cmake --install to write into. Anything else would be
+# refused so a tampered env cannot redirect a sudo install to arbitrary paths.
+ALLOWED_PREFIXES=("/usr" "/usr/local" "${HOME}/.local")
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -40,27 +49,27 @@ print_install_hint() {
     warn "Missing: $pkg_desc"
     case "$DISTRO_ID" in
         arch|cachyos|endeavouros|manjaro|garuda)
-            echo "  sudo pacman -S base-devel git cmake extra-cmake-modules qt6-base qt6-multimedia kio poppler-qt6" ;;
+            echo "  sudo pacman -S base-devel git cmake extra-cmake-modules qt6-base qt6-multimedia qt6-pdf kio" ;;
         fedora|nobara)
-            echo "  sudo dnf install git cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kio-devel poppler-qt6-devel" ;;
+            echo "  sudo dnf install git cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel qt6-qtpdf-devel kf6-kio-devel" ;;
         ubuntu|debian|linuxmint|pop)
-            echo "  sudo apt install git cmake build-essential extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6kio-dev libpoppler-qt6-dev" ;;
+            echo "  sudo apt install git cmake build-essential extra-cmake-modules qt6-base-dev qt6-multimedia-dev libqt6pdf6-dev libkf6kio-dev" ;;
         opensuse*|suse*)
-            echo "  sudo zypper install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel kf6-kio-devel libpoppler-qt6-devel" ;;
+            echo "  sudo zypper install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel qt6-pdf-devel kf6-kio-devel" ;;
         void)
-            echo "  sudo xbps-install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel kio-devel poppler-qt6-devel" ;;
+            echo "  sudo xbps-install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel qt6-pdf-devel kio-devel" ;;
         gentoo)
-            echo "  sudo emerge dev-vcs/git dev-build/cmake kde-frameworks/extra-cmake-modules dev-qt/qtbase dev-qt/qtmultimedia kde-frameworks/kio app-text/poppler[qt6]" ;;
+            echo "  sudo emerge dev-vcs/git dev-build/cmake kde-frameworks/extra-cmake-modules dev-qt/qtbase dev-qt/qtmultimedia dev-qt/qtpdf kde-frameworks/kio" ;;
         *)
             # Try ID_LIKE for derivatives
             if echo "$DISTRO_ID_LIKE" | grep -q "arch"; then
-                echo "  sudo pacman -S base-devel git cmake extra-cmake-modules qt6-base qt6-multimedia kio poppler-qt6"
+                echo "  sudo pacman -S base-devel git cmake extra-cmake-modules qt6-base qt6-multimedia qt6-pdf kio"
             elif echo "$DISTRO_ID_LIKE" | grep -q "debian\|ubuntu"; then
-                echo "  sudo apt install git cmake build-essential extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6kio-dev libpoppler-qt6-dev"
+                echo "  sudo apt install git cmake build-essential extra-cmake-modules qt6-base-dev qt6-multimedia-dev libqt6pdf6-dev libkf6kio-dev"
             elif echo "$DISTRO_ID_LIKE" | grep -q "fedora\|rhel"; then
-                echo "  sudo dnf install git cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kio-devel poppler-qt6-devel"
+                echo "  sudo dnf install git cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel qt6-qtpdf-devel kf6-kio-devel"
             else
-                echo "  Please install: git, cmake, extra-cmake-modules, Qt6, KDE Frameworks 6 (kio), poppler-qt6"
+                echo "  Please install: git, cmake, extra-cmake-modules, Qt6 (Base, Multimedia, Pdf), KDE Frameworks 6 (kio)"
             fi
             ;;
     esac
@@ -99,30 +108,34 @@ ok "Dependencies satisfied"
 mkdir -p "$BUILD_DIR"
 
 if [ -d "$DOLPHIN_DIR" ]; then
-    info "Dolphin source already exists, pulling latest..."
+    info "Dolphin source already exists, checking pinned commit..."
     cd "$DOLPHIN_DIR"
     if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
-        warn "Local changes detected in Dolphin source. Stashing..."
-        git stash
+        error "Local changes detected in $DOLPHIN_DIR. Commit, stash, or remove them before rerunning."
     fi
-    git pull --rebase 2>/dev/null || true
+    if [ "$(git rev-parse HEAD 2>/dev/null)" != "$DOLPHIN_COMMIT" ]; then
+        info "Fetching and checking out pinned commit $DOLPHIN_COMMIT..."
+        git fetch --depth 1 origin "$DOLPHIN_COMMIT"
+        git checkout --detach "$DOLPHIN_COMMIT"
+    fi
 else
-    info "Cloning KDE Dolphin..."
-    git clone --depth 1 https://invent.kde.org/system/dolphin.git "$DOLPHIN_DIR"
+    info "Cloning KDE Dolphin at pinned commit $DOLPHIN_COMMIT..."
+    git clone "$DOLPHIN_REPO" "$DOLPHIN_DIR"
+    cd "$DOLPHIN_DIR"
+    git checkout --detach "$DOLPHIN_COMMIT"
 fi
 
-ok "Dolphin source ready"
+ok "Dolphin source ready ($(git rev-parse --short HEAD))"
 
 # ── Apply patch ─────────────────────────────────────────────────────
 info "Applying Quick Look patch..."
 cd "$DOLPHIN_DIR"
 
-if git apply --check "$PATCH_FILE" 2>/dev/null; then
+if git apply --check "$PATCH_FILE"; then
     git apply "$PATCH_FILE"
     ok "Patch applied successfully"
 else
-    warn "Patch may already be applied or needs manual resolution"
-    git apply "$PATCH_FILE" --3way 2>/dev/null || error "Failed to apply patch. See above for details."
+    error "Patch does not apply cleanly. The Dolphin pin may be stale or the tree is dirty."
 fi
 
 # ── Detect install prefix ──────────────────────────────────────────
@@ -132,8 +145,9 @@ if [ -z "${CMAKE_INSTALL_PREFIX:-}" ]; then
     if [ -z "$INSTALL_PREFIX" ]; then
         DOLPHIN_BIN="$(command -v dolphin 2>/dev/null || true)"
         if [ -n "$DOLPHIN_BIN" ]; then
-            # e.g. /usr/bin/dolphin -> /usr
-            INSTALL_PREFIX="$(dirname "$(dirname "$DOLPHIN_BIN")")"
+            # Resolve symlinks so flatpak/snap wrappers don't produce a bogus prefix.
+            DOLPHIN_BIN_REAL="$(readlink -f "$DOLPHIN_BIN" 2>/dev/null || echo "$DOLPHIN_BIN")"
+            INSTALL_PREFIX="$(dirname "$(dirname "$DOLPHIN_BIN_REAL")")"
         else
             INSTALL_PREFIX="/usr"
         fi
@@ -141,21 +155,36 @@ if [ -z "${CMAKE_INSTALL_PREFIX:-}" ]; then
 else
     INSTALL_PREFIX="$CMAKE_INSTALL_PREFIX"
 fi
+
+# Whitelist the resolved prefix: a tampered env or snap/flatpak symlink must not
+# be able to redirect `sudo cmake --install` to an arbitrary path.
+prefix_allowed=0
+for allowed in "${ALLOWED_PREFIXES[@]}"; do
+    if [ "$INSTALL_PREFIX" = "$allowed" ]; then
+        prefix_allowed=1
+        break
+    fi
+done
+if [ "$prefix_allowed" -ne 1 ]; then
+    warn "Resolved install prefix '$INSTALL_PREFIX' is not in the allowed list:"
+    printf '  %s\n' "${ALLOWED_PREFIXES[@]}"
+    error "Refusing to install. Re-run with CMAKE_INSTALL_PREFIX=/usr (or another allowed path)."
+fi
 info "Install prefix: $INSTALL_PREFIX"
 
 # ── Build ───────────────────────────────────────────────────────────
-info "Configuring build..."
+BUILD_TYPE="${CMAKE_BUILD_TYPE:-Release}"
+info "Configuring build (type: $BUILD_TYPE)..."
 mkdir -p "$DOLPHIN_DIR/build"
 cd "$DOLPHIN_DIR/build"
 
 cmake .. \
     -DCMAKE_INSTALL_PREFIX="$INSTALL_PREFIX" \
-    -DCMAKE_BUILD_TYPE=Release \
-    2>&1 | tail -5
+    -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
 
 NPROC=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 info "Building with $NPROC threads..."
-cmake --build . -j"$NPROC" 2>&1 | tail -5
+cmake --build . -j"$NPROC"
 
 ok "Build completed"
 
@@ -168,7 +197,7 @@ read -p "Install now? [y/N] " -n 1 -r
 echo ""
 
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    info "Installing (requires sudo)..."
+    info "Installing to $INSTALL_PREFIX (requires sudo)..."
     sudo cmake --install .
     ok "Dolphin Quick Look installed!"
     echo ""
@@ -177,18 +206,21 @@ if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "  2. Open Dolphin"
     echo "  3. Double-click any image — enjoy the preview!"
     echo ""
-    info "To uninstall, reinstall Dolphin from your package manager:"
+    info "To uninstall:"
+    echo "  1. Remove files tracked by cmake:"
+    echo "     sudo xargs rm -v < $DOLPHIN_DIR/build/install_manifest.txt"
+    echo "  2. Reinstall the upstream Dolphin package from your package manager:"
     case "$DISTRO_ID" in
         arch|cachyos|endeavouros|manjaro|garuda)
-            echo "  sudo pacman -S dolphin" ;;
+            echo "     sudo pacman -S dolphin" ;;
         fedora|nobara)
-            echo "  sudo dnf reinstall dolphin" ;;
+            echo "     sudo dnf reinstall dolphin" ;;
         ubuntu|debian|linuxmint|pop)
-            echo "  sudo apt install --reinstall dolphin" ;;
+            echo "     sudo apt install --reinstall dolphin" ;;
         opensuse*|suse*)
-            echo "  sudo zypper install -f dolphin" ;;
+            echo "     sudo zypper install -f dolphin" ;;
         *)
-            echo "  Use your package manager to reinstall 'dolphin'" ;;
+            echo "     Use your package manager to reinstall 'dolphin'" ;;
     esac
 else
     info "Skipped installation."

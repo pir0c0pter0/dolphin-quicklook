@@ -27,7 +27,7 @@ Complete guide to using the Quick Look feature in KDE Dolphin.
 
 Supported content types:
 - **Images** -- always available (PNG, JPEG, WebP, SVG, GIF, TIFF, AVIF, HEIF, JXL, and more)
-- **PDFs** -- requires `poppler-qt6` at build time
+- **PDFs** -- requires `qt6-pdf` (`Qt6::Pdf`) at build time
 - **Videos** -- requires `qt6-multimedia` at build time
 - **Audio** -- requires `qt6-multimedia` at build time
 
@@ -121,7 +121,7 @@ When you zoom in, the image is re-rendered at the new zoom level for maximum sha
 
 ### Opening a PDF
 
-Double-click a `.pdf` file. The first page renders at display-fit DPI for a sharp preview.
+Double-click a `.pdf` file. The first page renders at display-fit DPI for a sharp preview. PDF rendering uses Qt's built-in PDF engine (`Qt6::Pdf`), not Poppler.
 
 ### Password-Protected PDFs
 
@@ -150,7 +150,7 @@ If the PDF has more than one page:
 |-------|--------------|
 | Page loading | Spinner animation appears |
 | Page ready | Crossfades into the new page |
-| Load timeout (3s) | Preview auto-closes |
+| Load timeout (5s) | Preview auto-closes |
 
 ## Video Playback
 
@@ -169,7 +169,7 @@ Double-click a video file. Quick Look extracts the first frame as a thumbnail du
 
 ### Loading Behavior
 
-The first frame must arrive within **3 seconds**. If it doesn't (corrupted file, unsupported codec), the preview auto-closes.
+The first frame must arrive within **5 seconds**. If it doesn't (corrupted file, unsupported codec), the preview auto-closes.
 
 ### Codec Support
 
@@ -214,6 +214,8 @@ The spectrum visualization uses a 1024-point FFT window to analyze the audio in 
 - **Logarithmic frequency mapping** -- bass frequencies get more visual space
 - **Green gradient** bars matching the vinyl label color scheme
 - Updates at ~30 FPS, synchronized with vinyl rotation
+
+> **Decode buffer cap:** only the first ~2 minutes of decoded audio samples are retained (44.1 kHz mono equivalent). Playback continues normally for longer tracks, but the spectrum analyzer freezes past that point to keep memory bounded.
 
 ### Zoom
 
@@ -261,13 +263,13 @@ All formats supported by Qt's `QImageReader`:
 
 \* Requires `qt6-imageformats` or `kimageformats` to be installed.
 
-### PDF (Requires Poppler)
+### PDF (Requires Qt PDF)
 
 | Format | Extensions |
 |--------|------------|
 | PDF | `.pdf` |
 
-Build with `poppler-qt6` to enable. Without it, PDF files open in the default application.
+Build with `qt6-pdf` (`Qt6::Pdf`) to enable. Without it, PDF files open in the default application.
 
 ### Video (Requires Qt Multimedia)
 
@@ -306,7 +308,7 @@ Build with `qt6-multimedia` to enable. Without it, audio files open in the defau
 
 | Dependency | What It Enables | Package Name |
 |------------|-----------------|--------------|
-| Poppler (Qt6) | PDF preview | `poppler-qt6` (Arch), `poppler-qt6-devel` (Fedora), `libpoppler-qt6-dev` (Debian) |
+| Qt6 PDF | PDF preview | `qt6-pdf` (Arch), `qt6-qtpdf-devel` (Fedora), `libqt6pdf6-dev` (Debian) |
 | Qt6 Multimedia | Video and audio preview | `qt6-multimedia` (Arch), `qt6-qtmultimedia-devel` (Fedora), `qt6-multimedia-dev` (Debian) |
 | Qt6 Image Formats | AVIF, HEIF, JXL | `qt6-imageformats` (Arch), `qt6-qtimageformats` (Fedora), `qt6-image-formats-plugins` (Debian) |
 | KDE Image Formats | Additional formats | `kimageformats` |
@@ -318,7 +320,7 @@ Image preview (PNG, JPEG, WebP, SVG, etc.) works without any optional dependenci
 ### Preview doesn't open
 
 - **File type not supported** -- Quick Look only handles images, PDFs, videos, and audio files. Other files open with the default application.
-- **PDF not opening** -- Dolphin was built without Poppler support. Rebuild with `poppler-qt6` installed.
+- **PDF not opening** -- Dolphin was built without Qt PDF support. Rebuild with `qt6-pdf` / `qt6-qtpdf-devel` / `libqt6pdf6-dev` installed.
 - **Video or audio not opening** -- Dolphin was built without Qt Multimedia. Rebuild with `qt6-multimedia` installed.
 
 ### HEIF/HEIC files don't load
@@ -362,5 +364,5 @@ sudo apt install qt6-image-formats-plugins
 
 ### Preview auto-closes immediately
 
-- **Timeout** -- if a PDF page or video first frame doesn't load within 3 seconds, the preview auto-closes as a safety measure.
+- **Timeout** -- if a PDF page or video first frame doesn't load within 5 seconds, the preview auto-closes as a safety measure.
 - This usually indicates a corrupted file or missing codec support.

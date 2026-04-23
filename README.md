@@ -44,14 +44,14 @@ No external apps. No popups. Everything happens inside Dolphin.
 - **Right-click reset** — smoothly animates back to 1.0x with a 200ms transition
 - **Progressive rendering** — triggers high-resolution re-render at each new zoom level for sharp details
 
-### PDF Preview (optional — requires Poppler)
+### PDF Preview (optional — requires Qt PDF)
 
 - **First page preview** — renders the first page at display-fit DPI for instant, sharp display
 - **Multi-page navigation** — browse pages with arrow keys, Page Up/Down, or clickable arrow buttons
 - **Page indicator** — displays "Page X of Y" below the preview
 - **Password-protected PDFs** — prompts for password with up to 3 attempts, then renders normally
-- **High-quality rendering** — Poppler render hints: `Antialiasing`, `TextAntialiasing`, `ThinLineShape` (antialiased thin lines), `OverprintPreview` (accurate color blending)
-- **Async loading** — pages render in a background thread; main UI stays responsive
+- **High-quality rendering** — Qt PDF render options: `Antialiasing`, `TextAntialiasing` via `QPdfDocumentRenderOptions`
+- **Async page rendering** — uses `QPdfPageRenderer` in multi-threaded mode; main UI stays responsive
 - **Loading spinner** — smooth rotating conical gradient animation while pages load
 - **Page cache** — LRU cache holds up to 5 pages with automatic adjacent-page prefetching
 - **Crossfade transitions** — 150ms blend between pages for smooth navigation
@@ -63,12 +63,12 @@ No external apps. No popups. Everything happens inside Dolphin.
 - **Looping** — continuous playback, restarts automatically
 - **Audio** — plays at 50% volume by default
 - **Smart loading** — extracts first frame as thumbnail, then starts playback after animation completes
-- **Timeout protection** — auto-closes if first frame doesn't arrive within 3 seconds
+- **Timeout protection** — auto-closes if first frame doesn't arrive within 5 seconds
 
 ### Audio Preview (optional — requires Qt Multimedia)
 
 - **Rotating vinyl record** — realistic vinyl disc visualization with grooves, highlight reflections, green center label, and spindle hole
-- **Real-time FFT spectrum** — 48-bar radial spectrum analyzer rendered inside the vinyl center label, driven by live audio decoding
+- **Real-time FFT spectrum** — 48-bar radial spectrum analyzer rendered inside the vinyl center label, driven by live audio decoding (first ~2 minutes of decoded samples are retained; longer tracks play normally but the spectrum freezes past the cap)
 - **Smooth spectrum animation** — exponential smoothing (0.35/0.65 blend) prevents flickering between frames
 - **Playback time display** — current position and total duration shown below the vinyl (supports h:mm:ss for long tracks)
 - **Looping playback** — audio restarts automatically
@@ -142,56 +142,56 @@ sudo cmake --install .
 
 **Arch / CachyOS / EndeavourOS / Manjaro:**
 ```bash
-sudo pacman -S base-devel git cmake extra-cmake-modules qt6-base qt6-multimedia kio poppler-qt6
+sudo pacman -S base-devel git cmake extra-cmake-modules qt6-base qt6-multimedia qt6-pdf kio
 ```
 
 **Fedora / Nobara:**
 ```bash
-sudo dnf install git cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel kf6-kio-devel poppler-qt6-devel
+sudo dnf install git cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel qt6-qtpdf-devel kf6-kio-devel
 ```
 
 **Ubuntu / Debian / KDE Neon:**
 ```bash
-sudo apt install git cmake build-essential extra-cmake-modules qt6-base-dev qt6-multimedia-dev libkf6kio-dev libpoppler-qt6-dev
+sudo apt install git cmake build-essential extra-cmake-modules qt6-base-dev qt6-multimedia-dev libqt6pdf6-dev libkf6kio-dev
 ```
 
 **openSUSE:**
 ```bash
-sudo zypper install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel kf6-kio-devel libpoppler-qt6-devel
+sudo zypper install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel qt6-pdf-devel kf6-kio-devel
 ```
 
 **Void Linux:**
 ```bash
-sudo xbps-install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel kio-devel poppler-qt6-devel
+sudo xbps-install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel qt6-pdf-devel kio-devel
 ```
 
 **Gentoo:**
 ```bash
-sudo emerge dev-vcs/git dev-build/cmake kde-frameworks/extra-cmake-modules dev-qt/qtbase dev-qt/qtmultimedia kde-frameworks/kio app-text/poppler[qt6]
+sudo emerge dev-vcs/git dev-build/cmake kde-frameworks/extra-cmake-modules dev-qt/qtbase dev-qt/qtmultimedia dev-qt/qtpdf kde-frameworks/kio
 ```
 
-> **Note:** `qt6-multimedia` and `poppler-qt6` are optional. Without them, video/audio and PDF preview will be disabled respectively. Image preview always works.
+> **Note:** `qt6-multimedia` and `qt6-pdf` are optional. Without them, video/audio and PDF preview will be disabled respectively. Image preview always works.
+
+> **Upstream target:** the patch is built against **Dolphin master** (KDE `invent.kde.org/system/dolphin` HEAD). Stable Dolphin releases (e.g. 24.x) use an older CMake variable name (`QT_REQUIRED_VERSION` instead of `QT_MIN_VERSION`) and the patch does not apply cleanly there. The installer pins a known-good upstream commit to keep builds reproducible.
 
 ### Uninstall
 
-Reinstall the original Dolphin from your package manager:
+The patched build installs files alongside the distro's Dolphin package. To cleanly revert:
 
 ```bash
-# Arch / CachyOS / EndeavourOS / Manjaro
-sudo pacman -S dolphin
+# 1. Remove files tracked by the patched build's cmake install:
+sudo xargs rm -v < build/dolphin/build/install_manifest.txt
 
-# Fedora / Nobara
-sudo dnf reinstall dolphin
-
-# Ubuntu / Debian / KDE Neon
-sudo apt install --reinstall dolphin
-
-# openSUSE
-sudo zypper install -f dolphin
-
-# Void Linux
-sudo xbps-install -f dolphin
+# 2. Reinstall the original Dolphin from your package manager:
+#    (pick the line for your distro)
+sudo pacman -S dolphin                           # Arch / CachyOS / EndeavourOS / Manjaro
+sudo dnf reinstall dolphin                       # Fedora / Nobara
+sudo apt install --reinstall dolphin             # Ubuntu / Debian / KDE Neon
+sudo zypper install -f dolphin                   # openSUSE
+sudo xbps-install -f dolphin                     # Void Linux
 ```
+
+> Skipping step 1 can leave orphan files under `src/views/quicklook/` translations and KCM entries that the package manager won't touch.
 
 ## How It Works
 
@@ -201,10 +201,10 @@ The patch adds new files and modifies existing ones in Dolphin's source:
 
 | File | Purpose |
 |------|---------|
-| `src/views/quicklookoverlay.h/cpp` | Overlay orchestrator: content loading, animation, rendering, input, zoom |
-| `src/views/quicklookconstants.h` | Shared layout constants (ContentPadding, BottomExtraSpace) |
-| `src/views/quicklookpdfhandler.h/cpp` | PDF engine: Poppler rendering, page cache, async loading, password support |
-| `src/views/quicklookmediahandler.h/cpp` | Media engine: video playback, audio with vinyl/FFT visualization |
+| `src/views/quicklook/quicklookoverlay.h/cpp` | Overlay orchestrator: content loading, animation, rendering, input, zoom |
+| `src/views/quicklook/quicklookconstants.h` | Shared layout constants (ContentPadding, BottomExtraSpace, FrameIntervalMs…) |
+| `src/views/quicklook/quicklookpdfhandler.h/cpp` | PDF engine: Qt PDF rendering, page cache, async loading, password support |
+| `src/views/quicklook/quicklookmediahandler.h/cpp` | Media engine: video playback, audio with vinyl/FFT visualization |
 
 ### Modified Files
 
@@ -212,8 +212,8 @@ The patch adds new files and modifies existing ones in Dolphin's source:
 |------|--------|
 | `src/views/dolphinview.h` | Added `QuickLookOverlay` member and forward declaration |
 | `src/views/dolphinview.cpp` | Intercepts double-click on supported files to show overlay instead of opening external app |
-| `src/CMakeLists.txt` | Added Quick Look sources, optional Poppler/Qt Multimedia |
-| `CMakeLists.txt` | Added optional `find_package` for Poppler and Qt Multimedia |
+| `src/CMakeLists.txt` | Added Quick Look sources, optional Qt PDF / Qt Multimedia |
+| `CMakeLists.txt` | Added optional `find_package` for Qt PDF and Qt Multimedia |
 
 > **No OpenGL dependency.** The entire rendering pipeline uses QPainter — no GPU drivers, no GL probing, no fallback paths. Works on every system that can run Qt.
 
@@ -225,7 +225,7 @@ DolphinView
         └── m_container (KItemListContainer)    <- file list lives here
               └── QuickLookOverlay               <- our overlay, parented to container
                     ├── QPainter                   <- rendering (no OpenGL)
-                    ├── QuickLookPdfHandler        <- PDF engine (Poppler)
+                    ├── QuickLookPdfHandler        <- PDF engine (Qt PDF)
                     └── QuickLookMediaHandler      <- Video/audio engine (QtMultimedia)
 ```
 
@@ -263,13 +263,13 @@ Any format supported by Qt's `QImageReader`, including:
 
 > **Note:** AVIF, HEIF/HEIC, and JXL support depends on Qt image plugins installed on your system (e.g., `qt6-imageformats` or `kimageformats`).
 
-### PDF (optional -- requires Poppler)
+### PDF (optional -- requires Qt PDF)
 
 | Format | Extension | MIME Type |
 |--------|-----------|-----------|
 | PDF | `.pdf` | `application/pdf` |
 
-Renders pages with navigation. Requires `poppler-qt6` at build time.
+Renders pages with navigation. Requires `Qt6::Pdf` (package `qt6-pdf` / `qt6-qtpdf-devel` / `libqt6pdf6-dev` depending on distro) at build time.
 
 ### Video (optional -- requires Qt Multimedia)
 
@@ -316,7 +316,7 @@ Audio files display a rotating vinyl record with a real-time FFT spectrum analyz
 - [x] Video preview with inline playback and looping
 - [x] Audio preview with rotating vinyl and real-time FFT spectrum
 - [x] Pure QPainter rendering — 100% compatible, no OpenGL dependency
-- [x] High-quality PDF rendering (ThinLineShape, OverprintPreview, antialiased)
+- [x] High-quality PDF rendering (Qt PDF antialiased + text-antialiased render options)
 - [x] Zoom with scroll wheel (cursor-centered) and drag-to-pan
 - [x] Progressive hi-res re-render with crossfade transitions
 - [x] HiDPI / multi-DPI display support
