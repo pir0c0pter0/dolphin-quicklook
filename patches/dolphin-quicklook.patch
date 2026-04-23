@@ -241,12 +241,12 @@ index 6aa5b59..7bdf22e 100644
      friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklook/quicklookconstants.h b/src/views/quicklook/quicklookconstants.h
 new file mode 100644
-index 0000000..efef274
+index 0000000..01a565f
 --- /dev/null
 +++ b/src/views/quicklook/quicklookconstants.h
 @@ -0,0 +1,20 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -267,12 +267,12 @@ index 0000000..efef274
 +#endif // QUICKLOOKCONSTANTS_H
 diff --git a/src/views/quicklook/quicklookmediahandler.cpp b/src/views/quicklook/quicklookmediahandler.cpp
 new file mode 100644
-index 0000000..36dab41
+index 0000000..5c0599c
 --- /dev/null
 +++ b/src/views/quicklook/quicklookmediahandler.cpp
 @@ -0,0 +1,623 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -896,12 +896,12 @@ index 0000000..36dab41
 +}
 diff --git a/src/views/quicklook/quicklookmediahandler.h b/src/views/quicklook/quicklookmediahandler.h
 new file mode 100644
-index 0000000..f12121f
+index 0000000..59e0dbc
 --- /dev/null
 +++ b/src/views/quicklook/quicklookmediahandler.h
 @@ -0,0 +1,119 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -1021,12 +1021,12 @@ index 0000000..f12121f
 +#endif // QUICKLOOKMEDIAHANDLER_H
 diff --git a/src/views/quicklook/quicklookoverlay.cpp b/src/views/quicklook/quicklookoverlay.cpp
 new file mode 100644
-index 0000000..fb4173b
+index 0000000..e0bf572
 --- /dev/null
 +++ b/src/views/quicklook/quicklookoverlay.cpp
 @@ -0,0 +1,1315 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -2342,12 +2342,12 @@ index 0000000..fb4173b
 +}
 diff --git a/src/views/quicklook/quicklookoverlay.h b/src/views/quicklook/quicklookoverlay.h
 new file mode 100644
-index 0000000..91c264c
+index 0000000..3a595df
 --- /dev/null
 +++ b/src/views/quicklook/quicklookoverlay.h
 @@ -0,0 +1,178 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -2526,12 +2526,12 @@ index 0000000..91c264c
 +#endif // QUICKLOOKOVERLAY_H
 diff --git a/src/views/quicklook/quicklookpdfhandler.cpp b/src/views/quicklook/quicklookpdfhandler.cpp
 new file mode 100644
-index 0000000..455e003
+index 0000000..6be0287
 --- /dev/null
 +++ b/src/views/quicklook/quicklookpdfhandler.cpp
 @@ -0,0 +1,496 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
@@ -3028,12 +3028,12 @@ index 0000000..455e003
 +}
 diff --git a/src/views/quicklook/quicklookpdfhandler.h b/src/views/quicklook/quicklookpdfhandler.h
 new file mode 100644
-index 0000000..e54163b
+index 0000000..768b7af
 --- /dev/null
 +++ b/src/views/quicklook/quicklookpdfhandler.h
 @@ -0,0 +1,123 @@
 +/*
-+ * SPDX-FileCopyrightText: 2026 Mario STJr
++ * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
 + * SPDX-License-Identifier: GPL-2.0-or-later
 + */
