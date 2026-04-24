@@ -100,6 +100,20 @@ No external apps. No popups. Everything happens inside Dolphin.
 | Right-click while zoomed | Reset zoom to 1x |
 | Up/Down arrows (PDF) | Navigate pages |
 
+## Activation Mode
+
+The default is **double-click** — tap any supported file twice and the preview opens immediately. Single Space on a selected item is also accepted (as an opt-in "prime then double-click" flow for users who prefer an explicit arm-then-open gesture).
+
+Set in `~/.config/dolphinrc` under `[General]`:
+
+```ini
+[General]
+QuickLookActivation=DoubleClickOnly       # default — double-click opens preview right away
+# QuickLookActivation=PrimeThenDoubleClick  # opt-in — double-click only opens preview if Space was pressed first (otherwise normal open)
+```
+
+Close keys (`Escape`, `Space`, double-click on the preview) are the same in both modes.
+
 ## Installation
 
 ### Quick Install (Recommended)
@@ -201,17 +215,22 @@ The patch adds new files and modifies existing ones in Dolphin's source:
 
 | File | Purpose |
 |------|---------|
-| `src/views/quicklook/quicklookoverlay.h/cpp` | Overlay orchestrator: content loading, animation, rendering, input, zoom |
+| `src/views/quicklook/quicklookcontroller.h/cpp` | Owns the overlay, the Space-prime timer, and the container eventFilter; reattaches across panes in split view |
+| `src/views/quicklook/quicklookoverlay.h/cpp` | Overlay widget (pImpl'd): animation, rendering, input, zoom — dispatches to content handlers |
+| `src/views/quicklook/quicklookcontenthandler.h/cpp` | Abstract base for content backends (open / close / statusText / logicalContentSize …) |
+| `src/views/quicklook/quicklookimagehandler.h/cpp` | Image backend: progressive decode + async hi-res crossfade rerender |
+| `src/views/quicklook/quicklookpdfhandler.h/cpp` | PDF backend: Qt PDF rendering, page cache, async loading, password support |
+| `src/views/quicklook/quicklookmediahandler.h/cpp` | Media backend: video playback, audio with vinyl/FFT visualization |
 | `src/views/quicklook/quicklookconstants.h` | Shared layout constants (ContentPadding, BottomExtraSpace, FrameIntervalMs…) |
-| `src/views/quicklook/quicklookpdfhandler.h/cpp` | PDF engine: Qt PDF rendering, page cache, async loading, password support |
-| `src/views/quicklook/quicklookmediahandler.h/cpp` | Media engine: video playback, audio with vinyl/FFT visualization |
 
 ### Modified Files
 
 | File | Change |
 |------|--------|
-| `src/views/dolphinview.h` | Added `QuickLookOverlay` member and forward declaration |
-| `src/views/dolphinview.cpp` | Intercepts double-click on supported files to show overlay instead of opening external app |
+| `src/views/dolphinview.h` | Narrow seam: `aboutToActivateItem` signal, `consumeActivation()` slot, `itemListContainer()` accessor — no `QuickLook` string anywhere in the class |
+| `src/views/dolphinview.cpp` | `slotItemActivated` emits `aboutToActivateItem` before the normal `itemActivated`, honours `consumeActivation()` |
+| `src/dolphintabpage.h/cpp` | Owns `std::unique_ptr<QuickLookController>` per tab; retargets it via `activeViewChanged` so split view just works |
+| `src/settings/dolphin_generalsettings.kcfg` | New `QuickLookActivation` enum (`DoubleClickOnly` default / `PrimeThenDoubleClick` opt-in) |
 | `src/CMakeLists.txt` | Added Quick Look sources, optional Qt PDF / Qt Multimedia |
 | `CMakeLists.txt` | Added optional `find_package` for Qt PDF and Qt Multimedia |
 
@@ -220,23 +239,29 @@ The patch adds new files and modifies existing ones in Dolphin's source:
 ### Architecture
 
 ```
-DolphinView
-  └── m_topLayout (QVBoxLayout)
-        └── m_container (KItemListContainer)    <- file list lives here
-              └── QuickLookOverlay               <- our overlay, parented to container
-                    ├── QPainter                   <- rendering (no OpenGL)
-                    ├── QuickLookPdfHandler        <- PDF engine (Qt PDF)
-                    └── QuickLookMediaHandler      <- Video/audio engine (QtMultimedia)
+DolphinTabPage
+  └── std::unique_ptr<QuickLookController>            <- one per tab, split-view aware
+        └── QuickLookOverlay                           <- pImpl'd widget, reparented to active pane's container
+              └── QuickLookContentHandler *            <- polymorphic slot
+                    ├── QuickLookImageHandler          <- images (QImageReader + progressive hi-res)
+                    ├── QuickLookPdfHandler            <- PDFs (Qt PDF)
+                    └── QuickLookMediaHandler          <- video / audio (Qt Multimedia)
+
+DolphinView                                           <- narrow seam only
+  + Q_SIGNAL  aboutToActivateItem(KFileItem)          <- intercept point
+  + Q_SLOT    consumeActivation()                     <- controller suppresses the default itemActivated
+  + accessor  itemListContainer()                     <- controller uses it for reparenting + eventFilter
 ```
 
 When a supported file is double-clicked:
 
-1. `DolphinView::slotItemActivated()` checks the MIME type
-2. If supported, `QuickLookOverlay::showPreview()` routes to the right handler (image / PDF / video / audio)
-3. The overlay resizes to fill the container and animates in (250ms cubic ease-out, scale 0.3→1.0)
-4. Content is rendered via QPainter and composited with background, shadow, and rounded corners
-5. The file list remains underneath — just covered by the overlay
-6. Double-click or `Escape` triggers `hidePreview()` which animates back out
+1. `DolphinView::slotItemActivated` emits `aboutToActivateItem(item)` *before* the normal `itemActivated` emit
+2. `QuickLookController::onAboutToActivateItem` checks the MIME type and activation mode (`DoubleClickOnly` always allows; `PrimeThenDoubleClick` requires a prior Space-press to arm the prime timer)
+3. If allowed, the controller reparents and resizes the overlay to the active pane's container, calls `QuickLookOverlay::showPreview(url)`, and on success calls `view->consumeActivation()` so the normal `itemActivated` emit is suppressed
+4. `QuickLookOverlay` routes through `QuickLookContentHandler *` to the right backend (image / PDF / video / audio) and animates in (250ms cubic ease-out, scale 0.3→1.0)
+5. Content renders via QPainter over the dark overlay with rounded corners and a dynamic shadow
+6. Double-click, `Escape`, or `Space` triggers `hidePreview()` which animates back out; on finish the overlay emits `previewClosed()` and releases content
+7. Split view: `DolphinTabPage::activeViewChanged` fires whenever the user toggles panes; the controller detaches from the old view, reparents the overlay to the new pane's container, and re-wires its eventFilter — no second overlay needed
 
 ## Supported Formats
 

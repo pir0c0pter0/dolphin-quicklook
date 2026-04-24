@@ -33,6 +33,15 @@ Supported content types:
 
 If the file is not a supported type, Dolphin opens it normally with the default application.
 
+### Activation Mode
+
+| Mode | Behaviour | Set via `~/.config/dolphinrc` |
+|------|-----------|-------------------------------|
+| `DoubleClickOnly` (**default**) | Double-click opens the preview immediately | `QuickLookActivation=DoubleClickOnly` |
+| `PrimeThenDoubleClick` (opt-in) | Select the file, tap `Space` to arm, then double-click — a bare double-click opens the file normally | `QuickLookActivation=PrimeThenDoubleClick` |
+
+Put the line under `[General]`. The prime timer auto-expires after a couple of seconds, so the armed state doesn't linger if you change your mind.
+
 ## Closing a Preview
 
 Any of these will close the preview with a fade-out animation:
