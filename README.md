@@ -130,6 +130,23 @@ The script will:
 3. Build Dolphin
 4. Optionally install (replaces system Dolphin)
 
+### Atomic Fedora (Bazzite / Silverblue / Kinoite)
+
+On an immutable `rpm-ostree` host, `/usr` is read-only and the build
+toolchain is not in the base image, so `./install.sh` cannot work. Use the
+atomic installer instead:
+
+```bash
+git clone https://github.com/pir0c0pter0/dolphin-quicklook.git
+cd dolphin-quicklook
+./scripts/install-bazzite.sh
+```
+
+It builds Dolphin inside a Toolbx container, installs into `~/.local` (no
+`sudo`, no system changes, no reboot), and points the dock launcher and the
+systemd user unit at the patched build. Re-run it any time to rebuild and
+update after pulling a newer patch.
+
 ### Manual Install
 
 ```bash
