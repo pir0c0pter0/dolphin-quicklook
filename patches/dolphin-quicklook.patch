@@ -66,7 +66,7 @@ diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
 index 4faabe9..0b63f4e 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -111,6 +111,17 @@ target_sources(dolphinprivate PRIVATE
+@@ -111,6 +111,15 @@ target_sources(dolphinprivate PRIVATE
      views/dolphinremoteencoding.cpp
      views/dolphinview.cpp
      views/dolphinviewactionhandler.cpp
@@ -78,16 +78,14 @@ index 4faabe9..0b63f4e 100644
 +    views/quicklook/quicklookimagehandler.h
 +    views/quicklook/quicklookoverlay.cpp
 +    views/quicklook/quicklookoverlay.h
-+    views/quicklook/quicklookpdfhandler.cpp
 +    views/quicklook/quicklookconstants.h
-+    views/quicklook/quicklookpdfhandler.h
      views/draganddrophelper.cpp
      views/versioncontrol/updateitemstatesthread.cpp
      views/versioncontrol/versioncontrolobserver.cpp
-@@ -237,6 +248,20 @@ target_link_libraries(
+@@ -237,6 +246,24 @@ target_link_libraries(
      ${FTS_LIB}
  )
- 
+
 +if(HAVE_QTMULTIMEDIA)
 +    target_sources(dolphinprivate PRIVATE
 +        views/quicklook/quicklookmediahandler.cpp
@@ -98,6 +96,10 @@ index 4faabe9..0b63f4e 100644
 +endif()
 +
 +if(HAVE_QTPDF)
++    target_sources(dolphinprivate PRIVATE
++        views/quicklook/quicklookpdfhandler.cpp
++        views/quicklook/quicklookpdfhandler.h
++    )
 +    target_compile_definitions(dolphinprivate PRIVATE HAVE_QTPDF)
 +    target_link_libraries(dolphinprivate PRIVATE Qt6::Pdf)
 +endif()
@@ -105,7 +107,7 @@ index 4faabe9..0b63f4e 100644
  if(HAVE_BALOO)
      target_link_libraries(
          dolphinprivate PUBLIC
-@@ -438,10 +463,12 @@ if(HAVE_BALOO)
+@@ -438,10 +465,12 @@ if(HAVE_BALOO)
          panels/information/dolphin_informationpanelsettings.kcfgc
      )
  
@@ -477,7 +479,7 @@ new file mode 100644
 index 0000000..b86b236
 --- /dev/null
 +++ b/src/views/quicklook/quicklookcontroller.cpp
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,181 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -574,6 +576,11 @@ index 0000000..b86b236
 +    }
 +
 +    if (m_overlay) {
++        // Stop active content first: hidePreview() releases the media
++        // player and PDF prefetch/render timers living in the overlay's
++        // Private. A plain hide() would leave them running on the
++        // about-to-be-orphaned widget.
++        m_overlay->hidePreview();
 +        // Hide before unparenting so the widget does not briefly appear
 +        // as a top-level window if an animation is in flight. The next
 +        // showPreview() resets any stale animation state.
@@ -1749,7 +1756,7 @@ new file mode 100644
 index 0000000..ee0016c
 --- /dev/null
 +++ b/src/views/quicklook/quicklookmediahandler.h
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,133 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -1760,6 +1767,9 @@ index 0000000..ee0016c
 +#define QUICKLOOKMEDIAHANDLER_H
 +
 +#include "quicklookcontenthandler.h"
++
++#include <complex>
++#include <vector>
 +
 +#include <QImage>
 +#include <QSize>
@@ -1885,7 +1895,7 @@ new file mode 100644
 index 0000000..8d2ebaa
 --- /dev/null
 +++ b/src/views/quicklook/quicklookoverlay.cpp
-@@ -0,0 +1,1405 @@
+@@ -0,0 +1,1418 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -2396,13 +2406,23 @@ index 0000000..8d2ebaa
 +    q->resize(q->parentWidget()->size());
 +
 +    m_pdfHandler->setDisplayArea(q->width(), q->height(), q->devicePixelRatioF());
-+    m_pdfHandler->loadAsync(filePath);
 +
-+    // Show overlay immediately with spinner — content arrives via async signal
++    // Show overlay immediately with spinner — content arrives via async signal.
++    // Must happen before loadAsync(): loadAsync can synchronously emit
++    // asyncLoadReady (size cap, load error, PasswordRequired), whose handler
++    // may close the overlay via closeImmediately().
 +    q->show();
 +    q->raise();
 +    q->setFocus();
 +    startShowAnimation();
++
++    m_pdfHandler->loadAsync(filePath);
++
++    // loadAsync may have synchronously closed the overlay (e.g. password
++    // cancelled or load failed); do not resurrect it.
++    if (!m_active) {
++        return false;
++    }
 +
 +    return true;
 +#else
@@ -2755,6 +2775,9 @@ index 0000000..8d2ebaa
 +{
 +    const int maxW = q->width() - 2 * ContentPadding;
 +    const int maxH = q->height() - 2 * ContentPadding - BottomExtraSpace;
++    if (maxW <= 0 || maxH <= 0) {
++        return {};
++    }
 +
 +    // Use stable logical size to prevent rect jumps during hi-res crossfade
 +    QSizeF logicalSize;
@@ -3369,7 +3392,7 @@ new file mode 100644
 index 0000000..55d884c
 --- /dev/null
 +++ b/src/views/quicklook/quicklookpdfhandler.cpp
-@@ -0,0 +1,533 @@
+@@ -0,0 +1,588 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -3380,12 +3403,30 @@ index 0000000..55d884c
 +#include "quicklookconstants.h"
 +
 +#include <QFileInfo>
++#include <QPainter>
 +#include <QRect>
 +#include <QTimer>
 +
 +namespace
 +{
 +using namespace QuickLookConstants;
++
++// QtPdf renders PDF pages with a transparent background. The overlay
++// composites the page over a dark dim layer, which turns white-paper PDFs
++// into illegible black-text-on-dark. Flatten any image with an alpha
++// channel onto an opaque white surface before it is shown or cached.
++QImage pdfPageOnWhite(const QImage &image)
++{
++    if (image.isNull() || !image.hasAlphaChannel()) {
++        return image;
++    }
++    QImage opaque(image.size(), QImage::Format_RGB32);
++    opaque.fill(Qt::white);
++    QPainter painter(&opaque);
++    painter.drawImage(0, 0, image);
++    painter.end();
++    return opaque;
++}
 +} // namespace
 +
 +// ---------------------------------------------------------------------------
@@ -3410,6 +3451,14 @@ index 0000000..55d884c
 +QuickLookPdfHandler::~QuickLookPdfHandler()
 +{
 +    cancelPendingRenders();
++    // MultiThreaded renders may still be queued. Sever the callback
++    // connection and tear the renderer down before the document so no
++    // pageRendered slot can fire into a half-destroyed handler.
++    if (m_pdfRenderer) {
++        disconnect(m_pdfRenderer, nullptr, this, nullptr);
++        delete m_pdfRenderer;
++        m_pdfRenderer = nullptr;
++    }
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -3681,15 +3730,13 @@ index 0000000..55d884c
 +    m_pendingRequests.insert(m_previewRequestId, m_generation);
 +}
 +
-+void QuickLookPdfHandler::requestHiRes(int pageIndex, QSize fullSize, QRect clipRect)
++void QuickLookPdfHandler::requestHiRes(int pageIndex, QSize fullSize)
 +{
++    // Always render the whole page. The overlay stretches the resulting
++    // pixmap to fill the full page draw-rect, so a partial (clipped)
++    // render would be distorted; the extra memory is the correct tradeoff.
 +    QPdfDocumentRenderOptions opts;
-+    if (!clipRect.isNull()) {
-+        opts.setScaledSize(fullSize);
-+        opts.setScaledClipRect(clipRect);
-+    }
-+    const QSize renderSize = clipRect.isNull() ? fullSize : clipRect.size();
-+    m_hiResRequestId = m_pdfRenderer->requestPage(pageIndex, renderSize, opts);
++    m_hiResRequestId = m_pdfRenderer->requestPage(pageIndex, fullSize, opts);
 +    m_pendingRequests.insert(m_hiResRequestId, m_generation);
 +}
 +
@@ -3715,20 +3762,39 @@ index 0000000..55d884c
 +        return;
 +    }
 +
++    // A hi-res response always clears the pending flag, even if the user
++    // has since navigated away — otherwise m_renderPending sticks forever.
++    const bool isHiResResponse = (requestId == m_hiResRequestId);
++    if (isHiResResponse) {
++        m_renderPending = false;
++    }
++
 +    if (image.isNull()) {
++        // A null image still needs to release the UI state it was holding.
++        if (requestId == m_previewRequestId) {
++            stopSpinner();
++            Q_EMIT pageLoadingChanged(false);
++            Q_EMIT loadFailed();
++        } else if (isHiResResponse) {
++            Q_EMIT requestUpdate();
++        }
 +        return;
 +    }
++
++    // QtPdf pages have a transparent background; flatten onto white once so
++    // every consumer (display, cache, signals) sees an opaque image.
++    const QImage normalized = pdfPageOnWhite(image);
 +
 +    if (requestId == m_previewRequestId && page == m_currentPage) {
 +        // Preview render complete
 +        const bool isFirstLoad = m_currentImage.isNull();
 +        const QImage oldImage = m_currentImage;
-+        m_currentImage = image;
++        m_currentImage = normalized;
 +
 +        stopSpinner();
 +        Q_EMIT pageLoadingChanged(false);
 +
-+        cacheInsert(page, image);
++        cacheInsert(page, normalized);
 +
 +        if (isFirstLoad) {
 +            updateStatusText();
@@ -3742,17 +3808,19 @@ index 0000000..55d884c
 +        m_hiResRenderTimer->start(PageRenderDelayMs);
 +        prefetchAdjacentPages();
 +
-+    } else if (requestId == m_hiResRequestId && page == m_currentPage) {
-+        // Hi-res render complete
-+        m_renderPending = false;
++    } else if (isHiResResponse && page == m_currentPage) {
++        // Hi-res render complete. Hi-res images are intentionally NOT cached:
++        // the per-page cache holds preview-sized renders only.
 +        const QImage oldImage = m_currentImage;
-+        m_currentImage = image;
++        m_currentImage = normalized;
 +        Q_EMIT crossfadeReady(m_currentImage, oldImage);
 +        Q_EMIT requestUpdate();
 +
-+    } else if (page != m_currentPage) {
-+        // Prefetch render for an adjacent page — cache it silently
-+        cacheInsert(page, image);
++    } else if (!isHiResResponse && page != m_currentPage) {
++        // Prefetch render for an adjacent page — cache it silently.
++        // Guarded with !isHiResResponse so a stale hi-res render that
++        // arrives after navigation is never inserted at preview size.
++        cacheInsert(page, normalized);
 +    }
 +}
 +
@@ -3770,14 +3838,11 @@ index 0000000..55d884c
 +    m_renderPending = true;
 +    Q_EMIT hiResRenderStarted();
 +
++    // Render the whole page at the appropriate resolution. When zoomed we
++    // render the full zoomed page (no clip rect) so the image always maps
++    // 1:1 onto the overlay's full page draw-rect.
 +    if (m_lastZoomFactor > 1.0) {
-+        const QSize full = zoomSize(m_lastZoomFactor);
-+        const QSize display = displaySize();
-+        const int clipW = qMin(static_cast<int>(display.width() * 1.2), full.width());
-+        const int clipH = qMin(static_cast<int>(display.height() * 1.2), full.height());
-+        const int clipX = qMax(0, (full.width() - clipW) / 2);
-+        const int clipY = qMax(0, (full.height() - clipH) / 2);
-+        requestHiRes(m_currentPage, full, QRect(clipX, clipY, clipW, clipH));
++        requestHiRes(m_currentPage, zoomSize(m_lastZoomFactor));
 +    } else {
 +        requestHiRes(m_currentPage, displaySize());
 +    }
@@ -3807,25 +3872,38 @@ index 0000000..55d884c
 +// Private — size helpers
 +// ---------------------------------------------------------------------------
 +
-+QSize QuickLookPdfHandler::previewSize() const
++QSize QuickLookPdfHandler::pageFitSize() const
 +{
++    // QtPdf scales the page to fill the requested pixel rect exactly, so the
++    // render size must carry the PDF page's own aspect ratio. Fit the page's
++    // logical (point) size into the available viewport area with
++    // Qt::KeepAspectRatio; fall back to a sane default when either is invalid.
 +    const int availW = m_areaWidth - 2 * ContentPadding;
 +    const int availH = m_areaHeight - 2 * ContentPadding - BottomExtraSpace;
 +    if (availW <= 0 || availH <= 0) {
 +        return QSize(800, 600);
 +    }
-+    // Half resolution for fast initial render
-+    return QSize(availW / 2, availH / 2);
++    QSizeF pagePt;
++    if (m_pdfDoc && m_pdfDoc->status() == QPdfDocument::Status::Ready) {
++        pagePt = m_pdfDoc->pagePointSize(m_currentPage);
++    }
++    if (pagePt.width() <= 0.0 || pagePt.height() <= 0.0) {
++        return QSize(800, 600);
++    }
++    return pagePt.scaled(QSizeF(availW, availH), Qt::KeepAspectRatio).toSize();
++}
++
++QSize QuickLookPdfHandler::previewSize() const
++{
++    // Half resolution for a fast initial render.
++    const QSize fit = pageFitSize();
++    return QSize(qMax(1, fit.width() / 2), qMax(1, fit.height() / 2));
 +}
 +
 +QSize QuickLookPdfHandler::displaySize() const
 +{
-+    const int availW = m_areaWidth - 2 * ContentPadding;
-+    const int availH = m_areaHeight - 2 * ContentPadding - BottomExtraSpace;
-+    if (availW <= 0 || availH <= 0) {
-+        return QSize(800, 600);
-+    }
-+    return QSize(static_cast<int>(availW * m_devicePixelRatio), static_cast<int>(availH * m_devicePixelRatio));
++    const QSize fit = pageFitSize();
++    return QSize(static_cast<int>(fit.width() * m_devicePixelRatio), static_cast<int>(fit.height() * m_devicePixelRatio));
 +}
 +
 +QSize QuickLookPdfHandler::zoomSize(qreal zoomFactor) const
@@ -3908,7 +3986,7 @@ new file mode 100644
 index 0000000..8726a20
 --- /dev/null
 +++ b/src/views/quicklook/quicklookpdfhandler.h
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,131 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -3986,8 +4064,9 @@ index 0000000..8726a20
 +    static constexpr qint64 MaxPdfFileSizeBytes = 256LL * 1024 * 1024; // 256 MiB
 +
 +    void requestPage(int pageIndex, QSize size);
-+    void requestHiRes(int pageIndex, QSize fullSize, QRect clipRect = {});
++    void requestHiRes(int pageIndex, QSize fullSize);
 +    void onPageRendered(int page, QSize imageSize, const QImage &image, QPdfDocumentRenderOptions options, quint64 requestId);
++    QSize pageFitSize() const;
 +    QSize previewSize() const;
 +    QSize displaySize() const;
 +    QSize zoomSize(qreal zoomFactor) const;
