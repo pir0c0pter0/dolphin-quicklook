@@ -198,7 +198,7 @@ index 48fecb2..40648a3 100644
 +                <choice name="DoubleClickOnly" />
 +            </choices>
 +            <label>Activation mode for the inline Quick Look preview</label>
-+            <default code="true">EnumQuickLookActivation::PrimeThenDoubleClick</default>
++            <default code="true">EnumQuickLookActivation::DoubleClickOnly</default>
 +        </entry>
      </group>
      <group name="Notification Messages">
