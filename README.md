@@ -38,7 +38,7 @@ No external apps. No popups. Everything happens inside Dolphin.
 
 ### Zoom
 
-- **Scroll wheel zoom** — zoom from 1.0x to 5.0x in 0.15x increments
+- **Scroll wheel zoom** — zoom from 1.0x to 5.0x, ~15% per scroll step
 - **Cursor-centered** — zoom follows your mouse position, not the image center
 - **Click & drag pan** — move around zoomed images with left-click drag (cursor changes to open hand)
 - **Right-click reset** — smoothly animates back to 1.0x with a 200ms transition
@@ -46,16 +46,16 @@ No external apps. No popups. Everything happens inside Dolphin.
 
 ### PDF Preview (optional — requires Qt PDF)
 
-- **First page preview** — renders the first page at display-fit DPI for instant, sharp display
+- **First page preview** — renders the first page immediately so the PDF appears without delay
 - **Multi-page navigation** — browse pages with arrow keys, Page Up/Down, or clickable arrow buttons
 - **Page indicator** — displays "Page X of Y" below the preview
 - **Password-protected PDFs** — prompts for password with up to 3 attempts, then renders normally
-- **High-quality rendering** — Qt PDF render options: `Antialiasing`, `TextAntialiasing` via `QPdfDocumentRenderOptions`
+- **High-quality rendering** — pages render antialiased through Qt PDF's `QPdfPageRenderer`
 - **Async page rendering** — uses `QPdfPageRenderer` in multi-threaded mode; main UI stays responsive
 - **Loading spinner** — smooth rotating conical gradient animation while pages load
 - **Page cache** — LRU cache holds up to 5 pages with automatic adjacent-page prefetching
 - **Crossfade transitions** — 150ms blend between pages for smooth navigation
-- **Hi-res re-render** — after initial display, re-renders at higher DPI (up to 600) for zoom clarity
+- **Hi-res re-render** — the initial preview renders at a fast low resolution, then re-renders at full display resolution (and higher while zoomed) for crisp detail
 
 ### Video Preview (optional — requires Qt Multimedia)
 
@@ -358,7 +358,7 @@ Audio files display a rotating vinyl record with a real-time FFT spectrum analyz
 - [x] Video preview with inline playback and looping
 - [x] Audio preview with rotating vinyl and real-time FFT spectrum
 - [x] Pure QPainter rendering — 100% compatible, no OpenGL dependency
-- [x] High-quality PDF rendering (Qt PDF antialiased + text-antialiased render options)
+- [x] High-quality antialiased PDF rendering via Qt PDF
 - [x] Zoom with scroll wheel (cursor-centered) and drag-to-pan
 - [x] Progressive hi-res re-render with crossfade transitions
 - [x] HiDPI / multi-DPI display support
