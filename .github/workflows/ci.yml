@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-and-patch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Check shell scripts
+        run: |
+          bash -n install.sh scripts/*.sh
+          shellcheck install.sh scripts/*.sh
+
+      - name: Check documentation contract
+        run: |
+          rg -q 'press `Space`' README.md
+          rg -q 'pinned Dolphin commit' README.md
+          ! rg -i 'Double-click .*preview opens|60Hz.*240Hz|216 DPI|capped at 4K|downloads the latest Quick Look' README.md USAGE.md docs/index.html
+
+      - name: Check patch against pinned Dolphin source
+        run: |
+          DOLPHIN_COMMIT="$(sed -n 's/^DOLPHIN_COMMIT="\([0-9a-f]\{40\}\)"$/\1/p' install.sh)"
+          test -n "$DOLPHIN_COMMIT"
+          mkdir upstream
+          git -C upstream init -q
+          git -C upstream remote add origin https://invent.kde.org/system/dolphin.git
+          git -C upstream fetch --depth 1 origin "$DOLPHIN_COMMIT"
+          git -C upstream checkout -q --detach FETCH_HEAD
+          git -C upstream apply --check "$GITHUB_WORKSPACE/patches/dolphin-quicklook.patch"

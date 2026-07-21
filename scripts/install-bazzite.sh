@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-FileCopyrightText: 2026 Pir0c0pter0
+# SPDX-License-Identifier: GPL-2.0-or-later
 #
 # install-bazzite.sh
 #
@@ -32,6 +34,9 @@ DOLPHIN_SRC="$BUILD_DIR/dolphin"
 
 PREFIX="$HOME/.local"
 TOOLBOX="dolphin-quicklook"   # dedicated Toolbx build container
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/dolphin-quicklook"
+MANIFEST="$STATE_DIR/install-manifest.txt"
+LOCK_FILE="$STATE_DIR/build.lock"
 
 # ── Logging ─────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -47,16 +52,18 @@ error() { printf '%s[ERROR]%s %s\n' "$RED"    "$NC" "$1" >&2; exit 1; }
 
 usage() {
     cat <<USAGE
-Usage: $(basename "$0")
+Usage: $(basename "$0") [--uninstall]
 
 Build the Dolphin Quick Look patch in a Toolbx container and install it
 into ~/.local on an atomic Fedora desktop. Re-run to update.
 
-No options. For a normal (mutable) distribution use ../install.sh.
+Use --uninstall to remove only files installed by this build and its user units.
+For a normal (mutable) distribution use ../install.sh.
 USAGE
 }
 
 [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]] && { usage; exit 0; }
+[[ $# -le 1 ]] || { usage >&2; exit 2; }
 
 # ── Preflight ───────────────────────────────────────────────────────
 preflight() {
@@ -67,6 +74,7 @@ preflight() {
     case "$HOME" in
         *[[:space:]]*) error "\$HOME contains whitespace ($HOME) -- unsupported." ;;
     esac
+    [[ ! -L "$PREFIX" ]] || error "$PREFIX must not be a symbolic link."
 
     # The Toolbx container shares the host home; the repo must live under
     # $HOME so the same absolute paths resolve inside the container.
@@ -93,6 +101,11 @@ preflight() {
         || error "'git' not found on the host."
     command -v realpath >/dev/null 2>&1 \
         || error "'realpath' not found on the host."
+    command -v flock >/dev/null 2>&1 \
+        || error "'flock' not found on the host."
+
+    JOBS="${JOBS:-$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+    [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || error "JOBS must be a positive integer."
 
     # Read the pinned Dolphin commit/repo from install.sh so the two
     # installers share a single source of truth and never drift apart.
@@ -108,11 +121,27 @@ preflight() {
 ensure_toolbox() {
     # Match the container by name in `toolbox list` so a plain (non-Toolbx)
     # podman container of the same name is not mistaken for ours.
+    # A named Toolbx survives host upgrades. Recreate this dedicated build
+    # container when its Fedora release no longer matches the host.
+    local host_release container_release=''
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    host_release="${VERSION_ID:-}"
+    [[ -n "$host_release" ]] || error "Host VERSION_ID is missing from /etc/os-release."
     if toolbox list --containers 2>/dev/null | grep -qw "$TOOLBOX"; then
-        info "Toolbx container '$TOOLBOX' already exists"
-    else
-        info "Creating Toolbx container '$TOOLBOX'..."
-        toolbox create -y "$TOOLBOX" || error "toolbox create failed"
+        # VERSION_ID must expand inside Toolbx.
+        # shellcheck disable=SC2016
+        container_release="$(toolbox run -c "$TOOLBOX" sh -c '. /etc/os-release; printf %s "${VERSION_ID:-}"' 2>/dev/null || true)"
+        if [[ "$container_release" != "$host_release" ]]; then
+            warn "Recreating Toolbx '$TOOLBOX' ($container_release -> $host_release)."
+            toolbox rm -f "$TOOLBOX" || error "could not remove stale Toolbx"
+        else
+            info "Toolbx container '$TOOLBOX' matches Fedora $host_release"
+        fi
+    fi
+    if [[ "$container_release" != "$host_release" ]]; then
+        info "Creating Fedora $host_release Toolbx '$TOOLBOX'..."
+        toolbox create -y --distro fedora --release "$host_release" "$TOOLBOX" || error "toolbox create failed"
     fi
 
     # Always (re)provision deps: dnf is idempotent, so this completes a
@@ -140,6 +169,7 @@ build_and_install() {
                 DOLPHIN_COMMIT="$DOLPHIN_COMMIT" \
                 PATCH_FILE="$PATCH_FILE" \
                 PREFIX="$PREFIX" \
+                JOBS="$JOBS" \
             bash -s <<'BUILD'
 set -euo pipefail
 
@@ -157,10 +187,10 @@ git apply "$PATCH_FILE"
 mkdir -p "$DOLPHIN_SRC/build"
 cd "$DOLPHIN_SRC/build"
 echo "[INFO] configuring (cmake)..."
-cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release
+cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 
-echo "[INFO] compiling with $(nproc) threads..."
-cmake --build . -j"$(nproc)"
+echo "[INFO] compiling with JOBS=$JOBS..."
+cmake --build . -j"$JOBS"
 
 echo "[INFO] installing to $PREFIX ..."
 cmake --install .
@@ -168,7 +198,37 @@ BUILD
     then
         error "build/install failed inside the container"
     fi
+    mkdir -p "$STATE_DIR"
+    install -m 600 "$DOLPHIN_SRC/build/install_manifest.txt" "$MANIFEST"
     ok "Dolphin Quick Look built and installed to $PREFIX"
+}
+
+uninstall_atomic() {
+    [[ -r "$MANIFEST" ]] || error "Install manifest not found: $MANIFEST"
+    local prefix_real dir_real path
+    local -a files=()
+    prefix_real="$(realpath -m "$PREFIX")"
+    while IFS= read -r path || [[ -n "$path" ]]; do
+        [[ -n "$path" && "$path" == /* ]] || error "Unsafe path in install manifest: '$path'"
+        dir_real="$(realpath -m "$(dirname "$path")")"
+        case "$dir_real/" in
+            "$prefix_real"/*) files+=("$path") ;;
+            *) error "Manifest path escapes $PREFIX: $path" ;;
+        esac
+    done < "$MANIFEST"
+    ((${#files[@]})) || error "Install manifest is empty: $MANIFEST"
+    rm -vf -- "${files[@]}"
+
+    local daemon_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/plasma-dolphin.service"
+    if [[ -f "$daemon_unit" ]] && grep -Fqx 'ExecStart=%h/.local/bin/dolphin --daemon' "$daemon_unit"; then
+        rm -v -- "$daemon_unit"
+    fi
+    local update_unit="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/dolphin-quicklook-update.service"
+    systemctl --user disable --now dolphin-quicklook-update.service 2>/dev/null || true
+    rm -f -- "$update_unit" "$HOME/.local/bin/dolphin-quicklook-update"
+    rm -rf -- "${XDG_DATA_HOME:-$HOME/.local/share}/dolphin-quicklook"
+    systemctl --user daemon-reload 2>/dev/null || true
+    ok "Removed the manifest-tracked user install and Quick Look user units."
 }
 
 # ── Repoint launchers at the ~/.local build ─────────────────────────
@@ -271,7 +331,20 @@ UNIT
 
 # ── Main ────────────────────────────────────────────────────────────
 main() {
+    mkdir -p "$STATE_DIR"
+    chmod 700 "$STATE_DIR"
+    if [[ "${DQL_LOCK_HELD:-0}" != 1 ]]; then
+        exec 9>"$LOCK_FILE"
+        flock 9
+    fi
     preflight
+    if [[ "${1:-}" == --uninstall ]]; then
+        uninstall_atomic
+        return
+    elif [[ -n "${1:-}" ]]; then
+        usage >&2
+        exit 2
+    fi
     ensure_toolbox
     build_and_install
     fix_launchers
@@ -279,8 +352,8 @@ main() {
     echo
     ok "Done. Dolphin Quick Look is installed at $PREFIX/bin/dolphin"
     info "Close every open Dolphin window and reopen it to pick up the update."
-    info "Quick Look opens on double-click by default; change the mode with"
-    info "  QuickLookActivation=PrimeThenDoubleClick   under [General] in ~/.config/dolphinrc"
+    info "Select a supported local file and press Space to open Quick Look."
+    info "Uninstall with: $SCRIPT_DIR/install-bazzite.sh --uninstall"
 }
 
 main "$@"

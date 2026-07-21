@@ -1,122 +1,38 @@
 # Dolphin Quick Look
 
-**macOS-style Quick Look for KDE Dolphin.** Double-click an image, PDF, video, or audio file to preview it inline with smooth animations. Double-click again (or press `Escape`) to return to the file list.
+Dolphin Quick Look is an experimental patch for KDE Dolphin that previews supported local files inside the file view. Select a file and press `Space`; press `Space` or `Escape` to close the preview.
 
-No external apps. No popups. Everything happens inside Dolphin.
+It is not an upstream Dolphin release or a distribution package. The installer builds one pinned Dolphin source revision (`b12eada7126627c43e463b1c1fff191233485d00`) so the patch is reproducible.
 
 <p align="center">
-  <img src="demo.gif" alt="Dolphin Quick Look Demo">
+  <img src="demo.gif" alt="Dolphin Quick Look preview">
 </p>
 
----
+## Current behavior
 
-## Features
+- `Space` opens the selected supported local file; it does not replace double-click activation.
+- Images use the formats provided by the installed Qt image plugins.
+- PDF support is optional and requires Qt PDF. Local PDF documents are loaded synchronously, while page rendering uses `QPdfPageRenderer` in multi-threaded mode. Files larger than 64 MiB are rejected.
+- Video and audio support are optional and require Qt Multimedia plus working system codecs.
+- Images and PDFs support wheel zoom from 1x to 5x, drag-to-pan, and right-click reset.
+- PDF pages use viewport-sized pixel renders, a five-page preview cache, adjacent-page prefetch, and up to three password attempts. There is no fixed-DPI promise or PDF render timeout.
+- The animation timer requests frames every 16 ms. Actual cadence depends on Qt, the compositor, display, and workload.
+- Preview rendering is software-based with QPainter. This does not guarantee operation in a headless session: Dolphin still needs a working Qt graphical environment.
+- Remote URLs are not previewed.
 
-### Core
+AVIF, HEIF/HEIC, JPEG XL and codecs are available only when the corresponding Qt or multimedia backend supports them. Quick Look does not provide its own HEIF diagnostic.
 
-- **Inline preview** — files open directly in the file list area, not in a separate window
-- **Smooth animations** — zoom-in/zoom-out transitions (250ms, cubic ease-out) with frame-driven rendering that syncs with your monitor's refresh rate (60Hz, 120Hz, 144Hz, 240Hz+)
-- **Fade-out on close** — preview fades and scales down smoothly instead of disappearing abruptly
-- **Dark overlay** — semi-transparent background keeps focus on the content
-- **Rounded corners & drop shadow** — clean, modern look with dynamic shadow based on animation progress
-- **Filename display** — shown below the preview
+See [USAGE.md](USAGE.md) for controls and troubleshooting.
 
-### Rendering
+## Compatibility
 
-- **Pure QPainter** — zero OpenGL dependency, works on every Linux system including VMs, Wayland-only setups, and headless environments with no GPU
-- **100% compatibility** — no GPU probing, no driver quirks, no fallback paths — one rendering pipeline that works everywhere
-- **Smooth pixmap transform** — `SmoothPixmapTransform` and `Antialiasing` render hints for crisp content at any scale
-- **Crossfade transitions** — opacity blending between old and new content for smooth page navigation and hi-res upgrades
-- **Rounded corners** — QPainterPath clipping for clean, modern content presentation
+The source pin currently declares CMake 3.16, Qt 6.4, KDE Frameworks 6.23, and C++20. Those minimums come from the pinned development snapshot; many stable distributions do not ship that KDE Frameworks version.
 
-### Image Preview
+The patch is tested against the exact commit above, not arbitrary Dolphin releases or Dolphin `HEAD`. Updating the pin requires regenerating and testing the patch.
 
-- **All Qt-supported formats** — PNG, JPEG, GIF, BMP, WebP, SVG, TIFF, ICO, AVIF, HEIF/HEIC, JXL, and more
-- **Transparent image support** — alpha channel is preserved and composited over the dark overlay; drop shadow is automatically disabled for transparent images
-- **Large image protection** — images larger than 4K are capped at 3840x2160 to prevent OOM
-- **HEIF/HEIC detection** — warns when files cannot be opened due to missing `libheif` / `qt6-imageformats`
+## Install on a mutable distribution
 
-### Zoom
-
-- **Scroll wheel zoom** — zoom from 1.0x to 5.0x, ~15% per scroll step
-- **Cursor-centered** — zoom follows your mouse position, not the image center
-- **Click & drag pan** — move around zoomed images with left-click drag (cursor changes to open hand)
-- **Right-click reset** — smoothly animates back to 1.0x with a 200ms transition
-- **Progressive rendering** — triggers high-resolution re-render at each new zoom level for sharp details
-
-### PDF Preview (optional — requires Qt PDF)
-
-- **First page preview** — renders the first page immediately so the PDF appears without delay
-- **Multi-page navigation** — browse pages with arrow keys, Page Up/Down, or clickable arrow buttons
-- **Page indicator** — displays "Page X of Y" below the preview
-- **Password-protected PDFs** — prompts for password with up to 3 attempts, then renders normally
-- **High-quality rendering** — pages render antialiased through Qt PDF's `QPdfPageRenderer`
-- **Async page rendering** — uses `QPdfPageRenderer` in multi-threaded mode; main UI stays responsive
-- **Loading spinner** — smooth rotating conical gradient animation while pages load
-- **Page cache** — LRU cache holds up to 5 pages with automatic adjacent-page prefetching
-- **Crossfade transitions** — 150ms blend between pages for smooth navigation
-- **Hi-res re-render** — the initial preview renders at a fast low resolution, then re-renders at full display resolution (and higher while zoomed) for crisp detail
-
-### Video Preview (optional — requires Qt Multimedia)
-
-- **Inline playback** — videos play directly in the overlay, no external player
-- **Looping** — continuous playback, restarts automatically
-- **Audio** — plays at 50% volume by default
-- **Smart loading** — extracts first frame as thumbnail, then starts playback after animation completes
-- **Timeout protection** — auto-closes if first frame doesn't arrive within 5 seconds
-
-### Audio Preview (optional — requires Qt Multimedia)
-
-- **Rotating vinyl record** — realistic vinyl disc visualization with grooves, highlight reflections, green center label, and spindle hole
-- **Real-time FFT spectrum** — 48-bar radial spectrum analyzer rendered inside the vinyl center label, driven by live audio decoding (first ~2 minutes of decoded samples are retained; longer tracks play normally but the spectrum freezes past the cap)
-- **Smooth spectrum animation** — exponential smoothing (0.35/0.65 blend) prevents flickering between frames
-- **Playback time display** — current position and total duration shown below the vinyl (supports h:mm:ss for long tracks)
-- **Looping playback** — audio restarts automatically
-- **Audio at 50% volume** — same default as video
-
-### HiDPI Support
-
-- **DPI-aware rendering** — all coordinates and text respect `devicePixelRatioF()`
-- **Sharp on any display** — no blurry scaling on 2x/3x HiDPI screens
-
-### Stability
-
-- **Race condition protection** — async renders are canceled and awaited before content switches or destruction
-- **Page navigation guard** — stale render results are discarded if the user navigated away
-- **Active state checks** — async callbacks bail out if the preview was closed
-- **Video phase management** — enum-based state machine prevents frame processing conflicts
-- **Audio decoder error handling** — graceful fallback when audio decoding fails
-- **Null guards** — defensive checks throughout to prevent crashes on edge cases
-
-## Demo
-
-| Action | Result |
-|--------|--------|
-| Double-click image/PDF/video/audio | Preview opens with zoom-in animation |
-| Double-click preview | Preview closes with fade-out animation |
-| Press `Escape` or `Space` | Preview closes |
-| Scroll wheel over preview | Zoom in/out (1x-5x) |
-| Drag while zoomed | Pan the image |
-| Right-click while zoomed | Reset zoom to 1x |
-| Up/Down arrows (PDF) | Navigate pages |
-
-## Activation Mode
-
-The default is **double-click** — tap any supported file twice and the preview opens immediately. Single Space on a selected item is also accepted (as an opt-in "prime then double-click" flow for users who prefer an explicit arm-then-open gesture).
-
-Set in `~/.config/dolphinrc` under `[General]`:
-
-```ini
-[General]
-QuickLookActivation=DoubleClickOnly       # default — double-click opens preview right away
-# QuickLookActivation=PrimeThenDoubleClick  # opt-in — double-click only opens preview if Space was pressed first (otherwise normal open)
-```
-
-Close keys (`Escape`, `Space`, double-click on the preview) are the same in both modes.
-
-## Installation
-
-### Quick Install (Recommended)
+Install the development dependencies for the pinned Dolphin source first. A distribution's Dolphin build dependencies are a useful starting point; Qt PDF and Qt Multimedia development packages enable the optional backends.
 
 ```bash
 git clone https://github.com/pir0c0pter0/dolphin-quicklook.git
@@ -124,17 +40,33 @@ cd dolphin-quicklook
 ./install.sh
 ```
 
-The script will:
-1. Clone KDE Dolphin source
-2. Apply the Quick Look patch
-3. Build Dolphin
-4. Optionally install (replaces system Dolphin)
+The script shallow-fetches the pinned commit, applies the local patch, configures with `BUILD_TESTING=OFF`, and builds it. It asks before installing. Set `JOBS` to limit parallel compilation:
 
-### Atomic Fedora (Bazzite / Silverblue / Kinoite)
+```bash
+JOBS=4 ./install.sh
+```
 
-On an immutable `rpm-ostree` host, `/usr` is read-only and the build
-toolchain is not in the base image, so `./install.sh` cannot work. Use the
-atomic installer instead:
+The default prefix follows an existing `dolphin` executable and otherwise uses `/usr`. System prefixes use `sudo`. A literal `$HOME/.local` prefix never uses `sudo` and is rejected if it is a symbolic link:
+
+```bash
+CMAKE_INSTALL_PREFIX="$HOME/.local" ./install.sh
+```
+
+A system-prefix install replaces or overlaps files owned by the distribution package. Test `build/dolphin/build/bin/dolphin` before accepting installation if that is unsuitable.
+
+### Mutable uninstall
+
+Keep the build directory: its CMake manifest identifies exactly what was installed.
+
+```bash
+./install.sh --uninstall
+```
+
+For a system prefix, reinstall Dolphin with the distribution package manager afterward to restore package-owned files. The uninstaller validates every manifest entry against the selected prefix before removing it.
+
+## Install on atomic Fedora
+
+Bazzite, Fedora Kinoite, and Fedora Silverblue have a read-only `/usr`. Use the atomic installer instead:
 
 ```bash
 git clone https://github.com/pir0c0pter0/dolphin-quicklook.git
@@ -142,254 +74,47 @@ cd dolphin-quicklook
 ./scripts/install-bazzite.sh
 ```
 
-It builds Dolphin inside a Toolbx container, installs into `~/.local` (no
-`sudo`, no system changes, no reboot), and points the dock launcher and the
-systemd user unit at the patched build. Re-run it any time to rebuild and
-update after pulling a newer patch.
+It:
 
-To update Quick Look automatically after the host Dolphin package changes:
+- verifies the host is OSTree-booted;
+- creates a dedicated Fedora Toolbx matching the host `VERSION_ID`, recreating only that dedicated container after a release mismatch;
+- builds with `BUILD_TESTING=OFF` and optional `JOBS`;
+- installs to a real, non-symlinked `$HOME/.local` without `sudo`;
+- points the desktop launcher and Dolphin user service at the user build.
+
+The mutable and atomic flows are intentionally separate.
+
+### Atomic update hook
 
 ```bash
 ./scripts/update-bazzite-hook.sh --install
 ```
 
-The user service checks once per login. When the Dolphin RPM version changes,
-it downloads the latest Quick Look commit and runs the atomic installer.
+This installs a local snapshot containing the current patch, pinned source metadata, and atomic installer. At login, the user service compares the installed Dolphin RPM version with the last processed version and rebuilds only after it changes.
 
-### Manual Install
+The hook never clones or executes a mutable remote branch. To approve a newer Quick Look revision, update this checkout, review it, and rerun `--install` to replace the local snapshot. Installer and hook share one `flock`; the service runs with `Nice=10`, `CPUWeight=20`, and `IOWeight=20`.
 
-```bash
-# Clone Dolphin
-git clone --depth 1 https://invent.kde.org/system/dolphin.git
-cd dolphin
-
-# Apply patch
-git apply /path/to/dolphin-quicklook/patches/dolphin-quicklook.patch
-
-# Build
-mkdir build && cd build
-cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Release
-cmake --build . -j$(nproc)
-
-# Test without installing
-./bin/dolphin
-
-# Or install system-wide
-sudo cmake --install .
-```
-
-### Build Dependencies
-
-**Arch / CachyOS / EndeavourOS / Manjaro:**
-```bash
-sudo pacman -S base-devel git cmake extra-cmake-modules qt6-base qt6-multimedia qt6-pdf kio
-```
-
-**Fedora / Nobara:**
-```bash
-sudo dnf install git cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel qt6-qtmultimedia-devel qt6-qtpdf-devel kf6-kio-devel
-```
-
-**Ubuntu / Debian / KDE Neon:**
-```bash
-sudo apt install git cmake build-essential extra-cmake-modules qt6-base-dev qt6-multimedia-dev libqt6pdf6-dev libkf6kio-dev
-```
-
-**openSUSE:**
-```bash
-sudo zypper install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel qt6-pdf-devel kf6-kio-devel
-```
-
-**Void Linux:**
-```bash
-sudo xbps-install git cmake extra-cmake-modules qt6-base-devel qt6-multimedia-devel qt6-pdf-devel kio-devel
-```
-
-**Gentoo:**
-```bash
-sudo emerge dev-vcs/git dev-build/cmake kde-frameworks/extra-cmake-modules dev-qt/qtbase dev-qt/qtmultimedia dev-qt/qtpdf kde-frameworks/kio
-```
-
-> **Note:** `qt6-multimedia` and `qt6-pdf` are optional. Without them, video/audio and PDF preview will be disabled respectively. Image preview always works.
-
-> **Upstream target:** the patch is built against **Dolphin master** (KDE `invent.kde.org/system/dolphin` HEAD). Stable Dolphin releases (e.g. 24.x) use an older CMake variable name (`QT_REQUIRED_VERSION` instead of `QT_MIN_VERSION`) and the patch does not apply cleanly there. The installer pins a known-good upstream commit to keep builds reproducible.
-
-### Uninstall
-
-The patched build installs files alongside the distro's Dolphin package. To cleanly revert:
+### Atomic uninstall
 
 ```bash
-# 1. Remove files tracked by the patched build's cmake install:
-sudo xargs rm -v < build/dolphin/build/install_manifest.txt
-
-# 2. Reinstall the original Dolphin from your package manager:
-#    (pick the line for your distro)
-sudo pacman -S dolphin                           # Arch / CachyOS / EndeavourOS / Manjaro
-sudo dnf reinstall dolphin                       # Fedora / Nobara
-sudo apt install --reinstall dolphin             # Ubuntu / Debian / KDE Neon
-sudo zypper install -f dolphin                   # openSUSE
-sudo xbps-install -f dolphin                     # Void Linux
+./scripts/install-bazzite.sh --uninstall
 ```
 
-> Skipping step 1 can leave orphan files under `src/views/quicklook/` translations and KCM entries that the package manager won't touch.
+This removes only manifest-tracked files under `$HOME/.local`, the Quick Look user units/hook, and its installed snapshot. The system Dolphin remains untouched and becomes visible again.
 
-## How It Works
+## Verification
 
-The patch adds new files and modifies existing ones in Dolphin's source:
+The repository CI checks:
 
-### New Files
+- `bash -n` and ShellCheck for all shell scripts;
+- that the patch applies cleanly to the shallow-fetched pinned Dolphin commit.
 
-| File | Purpose |
-|------|---------|
-| `src/views/quicklook/quicklookcontroller.h/cpp` | Owns the overlay, the Space-prime timer, and the container eventFilter; reattaches across panes in split view |
-| `src/views/quicklook/quicklookoverlay.h/cpp` | Overlay widget (pImpl'd): animation, rendering, input, zoom — dispatches to content handlers |
-| `src/views/quicklook/quicklookcontenthandler.h/cpp` | Abstract base for content backends (open / close / statusText / logicalContentSize …) |
-| `src/views/quicklook/quicklookimagehandler.h/cpp` | Image backend: progressive decode + async hi-res crossfade rerender |
-| `src/views/quicklook/quicklookpdfhandler.h/cpp` | PDF backend: Qt PDF rendering, page cache, async loading, password support |
-| `src/views/quicklook/quicklookmediahandler.h/cpp` | Media backend: video playback, audio with vinyl/FFT visualization |
-| `src/views/quicklook/quicklookconstants.h` | Shared layout constants (ContentPadding, BottomExtraSpace, FrameIntervalMs…) |
-
-### Modified Files
-
-| File | Change |
-|------|--------|
-| `src/views/dolphinview.h` | Narrow seam: `aboutToActivateItem` signal, `consumeActivation()` slot, `itemListContainer()` accessor — no `QuickLook` string anywhere in the class |
-| `src/views/dolphinview.cpp` | `slotItemActivated` emits `aboutToActivateItem` before the normal `itemActivated`, honours `consumeActivation()` |
-| `src/dolphintabpage.h/cpp` | Owns `std::unique_ptr<QuickLookController>` per tab; retargets it via `activeViewChanged` so split view just works |
-| `src/settings/dolphin_generalsettings.kcfg` | New `QuickLookActivation` enum (`DoubleClickOnly` default / `PrimeThenDoubleClick` opt-in) |
-| `src/CMakeLists.txt` | Added Quick Look sources, optional Qt PDF / Qt Multimedia |
-| `CMakeLists.txt` | Added optional `find_package` for Qt PDF and Qt Multimedia |
-
-> **No OpenGL dependency.** The entire rendering pipeline uses QPainter — no GPU drivers, no GL probing, no fallback paths. Works on every system that can run Qt.
-
-### Architecture
-
-```
-DolphinTabPage
-  └── std::unique_ptr<QuickLookController>            <- one per tab, split-view aware
-        └── QuickLookOverlay                           <- pImpl'd widget, reparented to active pane's container
-              └── QuickLookContentHandler *            <- polymorphic slot
-                    ├── QuickLookImageHandler          <- images (QImageReader + progressive hi-res)
-                    ├── QuickLookPdfHandler            <- PDFs (Qt PDF)
-                    └── QuickLookMediaHandler          <- video / audio (Qt Multimedia)
-
-DolphinView                                           <- narrow seam only
-  + Q_SIGNAL  aboutToActivateItem(KFileItem)          <- intercept point
-  + Q_SLOT    consumeActivation()                     <- controller suppresses the default itemActivated
-  + accessor  itemListContainer()                     <- controller uses it for reparenting + eventFilter
-```
-
-When a supported file is double-clicked:
-
-1. `DolphinView::slotItemActivated` emits `aboutToActivateItem(item)` *before* the normal `itemActivated` emit
-2. `QuickLookController::onAboutToActivateItem` checks the MIME type and activation mode (`DoubleClickOnly` always allows; `PrimeThenDoubleClick` requires a prior Space-press to arm the prime timer)
-3. If allowed, the controller reparents and resizes the overlay to the active pane's container, calls `QuickLookOverlay::showPreview(url)`, and on success calls `view->consumeActivation()` so the normal `itemActivated` emit is suppressed
-4. `QuickLookOverlay` routes through `QuickLookContentHandler *` to the right backend (image / PDF / video / audio) and animates in (250ms cubic ease-out, scale 0.3→1.0)
-5. Content renders via QPainter over the dark overlay with rounded corners and a dynamic shadow
-6. Double-click, `Escape`, or `Space` triggers `hidePreview()` which animates back out; on finish the overlay emits `previewClosed()` and releases content
-7. Split view: `DolphinTabPage::activeViewChanged` fires whenever the user toggles panes; the controller detaches from the old view, reparents the overlay to the new pane's container, and re-wires its eventFilter — no second overlay needed
-
-## Supported Formats
-
-### Images (always available)
-
-Any format supported by Qt's `QImageReader`, including:
-
-| Format | Extension | MIME Type |
-|--------|-----------|-----------|
-| PNG | `.png` | `image/png` |
-| JPEG | `.jpg`, `.jpeg` | `image/jpeg` |
-| GIF | `.gif` | `image/gif` |
-| BMP | `.bmp` | `image/bmp` |
-| WebP | `.webp` | `image/webp` |
-| SVG | `.svg` | `image/svg+xml` |
-| SVGZ | `.svgz` | `image/svg+xml-compressed` |
-| TIFF | `.tif`, `.tiff` | `image/tiff` |
-| ICO | `.ico` | `image/x-icon` |
-| XPM | `.xpm` | `image/x-xpixmap` |
-| PBM / PGM / PPM | `.pbm`, `.pgm`, `.ppm` | `image/x-portable-bitmap` etc. |
-| AVIF | `.avif` | `image/avif` |
-| HEIF / HEIC | `.heif`, `.heic` | `image/heif` |
-| JXL (JPEG XL) | `.jxl` | `image/jxl` |
-
-> **Note:** AVIF, HEIF/HEIC, and JXL support depends on Qt image plugins installed on your system (e.g., `qt6-imageformats` or `kimageformats`).
-
-### PDF (optional -- requires Qt PDF)
-
-| Format | Extension | MIME Type |
-|--------|-----------|-----------|
-| PDF | `.pdf` | `application/pdf` |
-
-Renders pages with navigation. Requires `Qt6::Pdf` (package `qt6-pdf` / `qt6-qtpdf-devel` / `libqt6pdf6-dev` depending on distro) at build time.
-
-### Video (optional -- requires Qt Multimedia)
-
-| Format | Extension | MIME Type |
-|--------|-----------|-----------|
-| MP4 | `.mp4` | `video/mp4` |
-| MKV | `.mkv` | `video/x-matroska` |
-| WebM | `.webm` | `video/webm` |
-| AVI | `.avi` | `video/x-msvideo` |
-| MOV | `.mov` | `video/quicktime` |
-| OGV | `.ogv` | `video/ogg` |
-| FLV | `.flv` | `video/x-flv` |
-| WMV | `.wmv` | `video/x-ms-wmv` |
-| M4V | `.m4v` | `video/x-m4v` |
-| 3GP | `.3gp` | `video/3gpp` |
-| TS | `.ts` | `video/mp2t` |
-
-> **Note:** Actual codec support depends on your system's GStreamer or FFmpeg backends. Most Linux distributions ship with broad codec support out of the box.
-
-Videos play inline with looping and audio. Requires `qt6-multimedia` at build time.
-
-### Audio (optional -- requires Qt Multimedia)
-
-| Format | Extension | MIME Type |
-|--------|-----------|-----------|
-| MP3 | `.mp3` | `audio/mpeg` |
-| FLAC | `.flac` | `audio/flac` |
-| OGG Vorbis | `.ogg` | `audio/ogg` |
-| WAV | `.wav` | `audio/wav` |
-| AAC / M4A | `.aac`, `.m4a` | `audio/aac`, `audio/mp4` |
-| Opus | `.opus` | `audio/opus` |
-| WMA | `.wma` | `audio/x-ms-wma` |
-| AIFF | `.aiff` | `audio/aiff` |
-
-> **Note:** Actual codec support depends on your system's GStreamer or FFmpeg backends.
-
-Audio files display a rotating vinyl record with a real-time FFT spectrum analyzer. Requires `qt6-multimedia` at build time.
-
-## Roadmap
-
-- [x] Inline image preview with smooth animation
-- [x] PDF preview with multi-page navigation and page cache
-- [x] Password-protected PDF support
-- [x] Video preview with inline playback and looping
-- [x] Audio preview with rotating vinyl and real-time FFT spectrum
-- [x] Pure QPainter rendering — 100% compatible, no OpenGL dependency
-- [x] High-quality antialiased PDF rendering via Qt PDF
-- [x] Zoom with scroll wheel (cursor-centered) and drag-to-pan
-- [x] Progressive hi-res re-render with crossfade transitions
-- [x] HiDPI / multi-DPI display support
-- [x] Transparent image support (alpha compositing, no shadow)
-- [x] Thread-safe async rendering with race condition protection
-- [x] Submitted as upstream KDE Merge Request ([!1209](https://invent.kde.org/system/dolphin/-/merge_requests/1209))
-
-## Contributing
-
-Contributions are welcome! This is a proof-of-concept that could become a native Dolphin feature.
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a Pull Request
+A full Dolphin build is intentionally not claimed by the portable CI job: it requires a KDE Frameworks 6.23 development environment. The installers leave upstream tests disabled because they install a feature build, not a Dolphin test suite.
 
 ## License
 
-GPL-2.0-or-later -- same as KDE Dolphin.
+GPL-2.0-or-later, matching the added source headers. The complete license text is in [LICENSE](LICENSE) and [LICENSES/GPL-2.0-or-later.txt](LICENSES/GPL-2.0-or-later.txt).
 
 ## Credits
 
-Built by [@pir0c0pter0](https://github.com/pir0c0pter0) (pir0c0pter0000@gmail.com) as a native KDE contribution.
-
-Powered by KDE Frameworks 6, Qt 6, and a desire for better file previews on Linux.
+Built by [@pir0c0pter0](https://github.com/pir0c0pter0) as a native Dolphin contribution.

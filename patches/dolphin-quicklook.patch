@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index d895088..51a0cc9 100644
+index d895088..46b6bae 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -58,6 +58,19 @@ find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
@@ -50,20 +50,8 @@ index d895088..51a0cc9 100644
  find_package(KF6FileMetaData ${KF6_MIN_VERSION})
  set_package_properties(KF6FileMetaData PROPERTIES
                         URL "https://projects.kde.org/kfilemetadata"
-@@ -136,11 +170,6 @@ set_package_properties(KF6BalooWidgets PROPERTIES DESCRIPTION "Baloos Widgets"
- if (KF6Baloo_FOUND AND KF6BalooWidgets_FOUND)
-     message(STATUS "Baloo packages are found")
-     set(HAVE_BALOO TRUE)
--
--    find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED COMPONENTS
--        Multimedia
--        MultimediaWidgets
--    )
- else ()
-     message(WARNING "Baloo packages not found. They are needed for the metadata features of Dolphin (including the information panel).")
- endif()
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 4faabe9..0b63f4e 100644
+index 4faabe9..b6bca78 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -111,6 +111,15 @@ target_sources(dolphinprivate PRIVATE
@@ -85,7 +73,7 @@ index 4faabe9..0b63f4e 100644
 @@ -237,6 +246,24 @@ target_link_libraries(
      ${FTS_LIB}
  )
-
+ 
 +if(HAVE_QTMULTIMEDIA)
 +    target_sources(dolphinprivate PRIVATE
 +        views/quicklook/quicklookmediahandler.cpp
@@ -107,25 +95,8 @@ index 4faabe9..0b63f4e 100644
  if(HAVE_BALOO)
      target_link_libraries(
          dolphinprivate PUBLIC
-@@ -438,10 +465,12 @@ if(HAVE_BALOO)
-         panels/information/dolphin_informationpanelsettings.kcfgc
-     )
- 
--    target_link_libraries(dolphinstatic
--        Qt::Multimedia
--        Qt::MultimediaWidgets
--    )
-+    if(HAVE_QTMULTIMEDIA)
-+        target_link_libraries(dolphinstatic
-+            Qt::Multimedia
-+            Qt::MultimediaWidgets
-+        )
-+    endif()
- endif()
- 
- if(HAVE_KUSERFEEDBACK)
 diff --git a/src/dolphintabpage.cpp b/src/dolphintabpage.cpp
-index 7187162..f375354 100644
+index 7187162..fb4e681 100644
 --- a/src/dolphintabpage.cpp
 +++ b/src/dolphintabpage.cpp
 @@ -9,6 +9,8 @@
@@ -137,7 +108,7 @@ index 7187162..f375354 100644
  
  #include <QFrame>
  #include <QGridLayout>
-@@ -67,6 +69,15 @@ DolphinTabPage::DolphinTabPage(const QUrl &primaryUrl, const QUrl &secondaryUrl,
+@@ -67,8 +69,19 @@ DolphinTabPage::DolphinTabPage(const QUrl &primaryUrl, const QUrl &secondaryUrl,
      disconnectViewActivatedSignals();
      m_primaryViewContainer->setActive(true);
      connectViewActivatedSignals();
@@ -152,9 +123,23 @@ index 7187162..f375354 100644
 +    });
  }
  
++DolphinTabPage::~DolphinTabPage() = default;
++
  bool DolphinTabPage::primaryViewActive() const
+ {
+     return m_primaryViewActive;
+@@ -405,6 +418,9 @@ void DolphinTabPage::restoreState(const QByteArray &state)
+ 
+ void DolphinTabPage::setActive(bool active)
+ {
++    if (!active) {
++        m_quickLookController->closePreview();
++    }
+     if (active) {
+         m_active = active;
+     } else {
 diff --git a/src/dolphintabpage.h b/src/dolphintabpage.h
-index 421496c..1a36029 100644
+index 421496c..39d81d2 100644
 --- a/src/dolphintabpage.h
 +++ b/src/dolphintabpage.h
 @@ -15,11 +15,14 @@
@@ -172,7 +157,15 @@ index 421496c..1a36029 100644
  
  class DolphinTabPage : public QWidget
  {
-@@ -225,6 +228,11 @@ private:
+@@ -27,6 +30,7 @@ class DolphinTabPage : public QWidget
+ 
+ public:
+     explicit DolphinTabPage(const QUrl &primaryUrl, const QUrl &secondaryUrl = QUrl(), QWidget *parent = nullptr);
++    ~DolphinTabPage() override;
+ 
+     /**
+      * @return True if primary view is the active view in this tab.
+@@ -225,6 +229,11 @@ private:
  
      std::unique_ptr<QFrame> m_navigatorSeparator;
  
@@ -184,56 +177,90 @@ index 421496c..1a36029 100644
      bool m_primaryViewActive;
      bool m_splitViewEnabled;
      bool m_active;
-diff --git a/src/settings/dolphin_generalsettings.kcfg b/src/settings/dolphin_generalsettings.kcfg
-index 48fecb2..40648a3 100644
---- a/src/settings/dolphin_generalsettings.kcfg
-+++ b/src/settings/dolphin_generalsettings.kcfg
-@@ -183,6 +183,14 @@
-             <label>Enable dynamic view</label>
-             <default>false</default>
-         </entry>
-+        <entry name="QuickLookActivation" type="Enum">
-+            <choices>
-+                <choice name="PrimeThenDoubleClick" />
-+                <choice name="DoubleClickOnly" />
-+            </choices>
-+            <label>Activation mode for the inline Quick Look preview</label>
-+            <default code="true">EnumQuickLookActivation::DoubleClickOnly</default>
-+        </entry>
-     </group>
-     <group name="Notification Messages">
-         <entry name="ConfirmOpenManyFolders" type="Bool">
-diff --git a/src/views/dolphinview.cpp b/src/views/dolphinview.cpp
-index 7942238..30b3577 100644
---- a/src/views/dolphinview.cpp
-+++ b/src/views/dolphinview.cpp
-@@ -1154,10 +1154,21 @@ void DolphinView::slotItemActivated(int index)
+diff --git a/src/tests/dolphinmainwindowtest.cpp b/src/tests/dolphinmainwindowtest.cpp
+index 21e48f2..8439fa3 100644
+--- a/src/tests/dolphinmainwindowtest.cpp
++++ b/src/tests/dolphinmainwindowtest.cpp
+@@ -19,6 +19,8 @@
+ #include "settings/viewmodes/viewmodesettings.h"
+ #include "testdir.h"
+ #include "views/dolphinitemlistview.h"
++#include "views/quicklook/quicklookcontroller.h"
++#include "views/quicklook/quicklookoverlay.h"
+ #include "views/viewproperties.h"
+ #include "views/zoomlevelinfo.h"
  
-     const KFileItem item = m_model->fileItem(index);
-     if (!item.isNull()) {
-+        m_activationConsumed = false;
-+        Q_EMIT aboutToActivateItem(item);
-+        if (m_activationConsumed) {
-+            m_activationConsumed = false;
-+            return;
-+        }
-         Q_EMIT itemActivated(item);
-     }
+@@ -31,6 +33,7 @@
+ #include <QApplication>
+ #include <QDomDocument>
+ #include <QFileSystemWatcher>
++#include <QImage>
+ #include <QKeySequence>
+ #include <QScopedPointer>
+ #include <QSignalSpy>
+@@ -72,6 +75,7 @@ private Q_SLOTS:
+     void testViewModeAfterDynamicView();
+     void testActivationAndTabTitleAfterRenameOpeningFolder();
+     void testActiveViewAfterTabSwitchWithSplitView();
++    void testQuickLookSpaceAndLifecycle();
+     void cleanupTestCase();
+ 
+ private:
+@@ -1340,6 +1344,49 @@ void DolphinMainWindowTest::testActiveViewAfterTabSwitchWithSplitView()
+     QVERIFY(!firstTabPage->primaryViewContainer()->isActive());
  }
  
-+void DolphinView::consumeActivation()
++void DolphinMainWindowTest::testQuickLookSpaceAndLifecycle()
 +{
-+    m_activationConsumed = true;
++    TestDir testDir;
++    const QUrl imageUrl = QUrl::fromLocalFile(testDir.filePath(QStringLiteral("preview.png")));
++    const QUrl textUrl = QUrl::fromLocalFile(testDir.filePath(QStringLiteral("plain.txt")));
++    QImage image(2, 2, QImage::Format_ARGB32);
++    QVERIFY(image.save(imageUrl.toLocalFile()));
++    testDir.createFile(textUrl.toLocalFile());
++
++    m_mainWindow->openDirectories({testDir.url()}, false);
++    m_mainWindow->show();
++    QVERIFY(QTest::qWaitForWindowExposed(m_mainWindow.data()));
++
++    DolphinTabPage *tabPage = m_mainWindow->m_tabWidget->currentTabPage();
++    DolphinView *view = tabPage->activeViewContainer()->view();
++    QTRY_COMPARE(view->itemsCount(), 2);
++    QuickLookOverlay *overlay = view->itemListContainer()->findChild<QuickLookOverlay *>(QString(), Qt::FindDirectChildrenOnly);
++    QVERIFY(overlay);
++
++    view->forceUrlsSelection(textUrl, {textUrl});
++    view->updateViewState();
++    QTest::keyClick(view->itemListContainer(), Qt::Key_Space);
++    QTRY_VERIFY(tabPage->activeViewContainer()->isSelectionModeEnabled()); // Unsupported files preserve Dolphin's native Space shortcut.
++    QTest::keyClick(view->itemListContainer(), Qt::Key_Space);
++    QTRY_VERIFY(!tabPage->activeViewContainer()->isSelectionModeEnabled());
++
++    view->forceUrlsSelection(imageUrl, {imageUrl});
++    view->updateViewState();
++    QTest::keyClick(view->itemListContainer(), Qt::Key_Space);
++    QVERIFY(overlay->isPreviewActive());
++
++    auto *controller = tabPage->findChild<QuickLookController *>();
++    QVERIFY(controller);
++    controller->closePreview();
++    controller->closePreview();
++    QTRY_VERIFY(!overlay->isPreviewActive());
++
++    QTest::keyClick(view->itemListContainer(), Qt::Key_Space);
++    QVERIFY(overlay->isPreviewActive());
++    tabPage->setActive(false);
++    QTRY_VERIFY(!overlay->isPreviewActive());
 +}
 +
- void DolphinView::slotItemsActivated(const KItemSet &indexes)
+ void DolphinMainWindowTest::cleanupTestCase()
  {
-     Q_ASSERT(indexes.count() >= 2);
+     m_mainWindow->showNormal();
 diff --git a/src/views/dolphinview.h b/src/views/dolphinview.h
-index 6aa5b59..57f51f7 100644
+index 6aa5b59..cabe2b5 100644
 --- a/src/views/dolphinview.h
 +++ b/src/views/dolphinview.h
-@@ -411,10 +411,28 @@ public:
+@@ -411,6 +411,16 @@ public:
       */
      void expandToUrl(const QUrl &directory);
  
@@ -250,45 +277,6 @@ index 6aa5b59..57f51f7 100644
  public Q_SLOTS:
  
      void reload();
- 
-+    /**
-+     * Suppresses the next itemActivated() emit that would otherwise follow
-+     * the current aboutToActivateItem(). Meant to be called from a slot
-+     * connected to aboutToActivateItem() when the receiver has fully
-+     * handled the item itself.
-+     */
-+    void consumeActivation();
-+
-     /**
-      * Changes the directory to \a url. If the current directory is equal to
-      * \a url, nothing will be done (use DolphinView::reload() instead).
-@@ -519,6 +537,15 @@ Q_SIGNALS:
-      */
-     void itemActivated(const KFileItem &item);
- 
-+    /**
-+     * Emitted just before itemActivated() during an activation. A receiver
-+     * that wants to suppress the default activation (for example, because
-+     * it handled the item itself as an inline preview) calls
-+     * consumeActivation() from within its slot; in that case itemActivated()
-+     * is not emitted for this activation.
-+     */
-+    void aboutToActivateItem(const KFileItem &item);
-+
-     /**
-      * request the property dialog
-      */
-@@ -1050,6 +1077,10 @@ private:
-     /// Hash table of user-preferred sort orders for each role
-     QHash<QByteArray, Qt::SortOrder> m_rolesSortOrder;
- 
-+    /// Set by consumeActivation() from an aboutToActivateItem receiver to
-+    /// suppress the subsequent itemActivated emit for the current activation.
-+    bool m_activationConsumed = false;
-+
-     // For unit tests
-     friend class TestBase;
-     friend class DolphinDetailsViewTest;
 diff --git a/src/views/quicklook/quicklookconstants.h b/src/views/quicklook/quicklookconstants.h
 new file mode 100644
 index 0000000..01a565f
@@ -317,10 +305,10 @@ index 0000000..01a565f
 +#endif // QUICKLOOKCONSTANTS_H
 diff --git a/src/views/quicklook/quicklookcontenthandler.cpp b/src/views/quicklook/quicklookcontenthandler.cpp
 new file mode 100644
-index 0000000..b64d8a3
+index 0000000..ea06f9d
 --- /dev/null
 +++ b/src/views/quicklook/quicklookcontenthandler.cpp
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,64 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -329,6 +317,9 @@ index 0000000..b64d8a3
 +
 +#include "quicklookcontenthandler.h"
 +
++#include <QFile>
++#include <QFileInfo>
++
 +QuickLookContentHandler::QuickLookContentHandler(QObject *parent)
 +    : QObject(parent)
 +{
@@ -336,8 +327,33 @@ index 0000000..b64d8a3
 +
 +QuickLookContentHandler::~QuickLookContentHandler() = default;
 +
++bool QuickLookContentHandler::isReadableLocalFile(const QUrl &url)
++{
++    if (!url.isValid() || !url.isLocalFile()) {
++        return false;
++    }
++
++    const QFileInfo info(url.toLocalFile());
++    if (!info.exists() || !info.isFile() || !info.isReadable()) {
++        return false;
++    }
++
++    QFile file(info.absoluteFilePath());
++    return file.open(QIODevice::ReadOnly);
++}
++
 +void QuickLookContentHandler::setViewportSize(const QSize &)
 +{
++}
++
++void QuickLookContentHandler::setAnimationsEnabled(bool enabled)
++{
++    m_animationsEnabled = enabled;
++}
++
++bool QuickLookContentHandler::animationsEnabled() const
++{
++    return m_animationsEnabled;
 +}
 +
 +void QuickLookContentHandler::onShowAnimationFinished()
@@ -359,10 +375,10 @@ index 0000000..b64d8a3
 +}
 diff --git a/src/views/quicklook/quicklookcontenthandler.h b/src/views/quicklook/quicklookcontenthandler.h
 new file mode 100644
-index 0000000..41d1280
+index 0000000..ce311c4
 --- /dev/null
 +++ b/src/views/quicklook/quicklookcontenthandler.h
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,124 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -412,6 +428,9 @@ index 0000000..41d1280
 +    explicit QuickLookContentHandler(QObject *parent = nullptr);
 +    ~QuickLookContentHandler() override;
 +
++    /** True only for a local, regular file that can actually be opened for reading. */
++    static bool isReadableLocalFile(const QUrl &url);
++
 +    /** The kind of content this handler is currently presenting. */
 +    virtual Kind kind() const = 0;
 +
@@ -444,6 +463,10 @@ index 0000000..41d1280
 +     *  render resolution. Default is a no-op. */
 +    virtual void setViewportSize(const QSize &size);
 +
++    /** Disable decorative timers when the active widget style reports that
++     *  animations are disabled. */
++    void setAnimationsEnabled(bool enabled);
++
 +    /** Called once the show animation has settled. Used by the media
 +     *  handler to start playback. Default is a no-op. */
 +    virtual void onShowAnimationFinished();
@@ -455,6 +478,9 @@ index 0000000..41d1280
 +    /** Optional input hooks. Return true if consumed. Default no-op. */
 +    virtual bool handleKey(QKeyEvent *event);
 +    virtual bool handleMouse(QMouseEvent *event);
++
++protected:
++    bool animationsEnabled() const;
 +
 +Q_SIGNALS:
 +    /** A new full-quality image is ready for display. */
@@ -471,12 +497,15 @@ index 0000000..41d1280
 +
 +    /** Request a repaint without a new image (animation tick etc.). */
 +    void requestUpdate();
++
++private:
++    bool m_animationsEnabled = true;
 +};
 +
 +#endif // QUICKLOOKCONTENTHANDLER_H
 diff --git a/src/views/quicklook/quicklookcontroller.cpp b/src/views/quicklook/quicklookcontroller.cpp
 new file mode 100644
-index 0000000..b86b236
+index 0000000..93eb5c2
 --- /dev/null
 +++ b/src/views/quicklook/quicklookcontroller.cpp
 @@ -0,0 +1,181 @@
@@ -488,26 +517,16 @@ index 0000000..b86b236
 +
 +#include "quicklookcontroller.h"
 +
-+#include "dolphin_generalsettings.h"
 +#include "kitemviews/kitemlistcontainer.h"
++#include "quicklookcontenthandler.h"
 +#include "quicklookoverlay.h"
 +#include "views/dolphinview.h"
-+
-+#include <KFileItem>
 +
 +#include <QEvent>
 +#include <QKeyEvent>
 +#include <QResizeEvent>
-+#include <QTimer>
 +
 +#include <utility>
-+
-+namespace
-+{
-+// How long after Space is pressed the "primed" state remains valid.
-+// Matches the previous hard-coded value in DolphinView.
-+constexpr int PrimeTimeoutMs = 2000;
-+}
 +
 +QuickLookController::QuickLookController(QObject *parent)
 +    : QObject(parent)
@@ -515,11 +534,6 @@ index 0000000..b86b236
 +    m_overlay = new QuickLookOverlay(nullptr);
 +    m_overlay->hide();
 +    connect(m_overlay.data(), &QuickLookOverlay::previewClosed, this, &QuickLookController::onPreviewClosed);
-+
-+    m_primeTimer = new QTimer(this);
-+    m_primeTimer->setSingleShot(true);
-+    m_primeTimer->setInterval(PrimeTimeoutMs);
-+    connect(m_primeTimer, &QTimer::timeout, this, &QuickLookController::onPrimeTimerTimeout);
 +}
 +
 +QuickLookController::~QuickLookController()
@@ -552,6 +566,7 @@ index 0000000..b86b236
 +
 +    m_view = view;
 +    m_container = container;
++    m_window = container->window();
 +
 +    if (m_overlay) {
 +        m_overlay->setParent(container);
@@ -559,9 +574,14 @@ index 0000000..b86b236
 +        m_overlay->resize(container->size());
 +    }
 +    container->installEventFilter(this);
++    if (m_window) {
++        // Dolphin binds unmodified Space to Selection Mode. Accepting the
++        // ShortcutOverride here lets the subsequent KeyPress reach the view
++        // only when Quick Look can actually handle the current selection.
++        m_window->installEventFilter(this);
++    }
 +
-+    m_viewConnections.append(
-+        connect(view, &DolphinView::aboutToActivateItem, this, &QuickLookController::onAboutToActivateItem));
++    m_viewConnections.append(connect(view, &DolphinView::urlChanged, this, &QuickLookController::closePreview));
 +}
 +
 +void QuickLookController::detach()
@@ -574,13 +594,12 @@ index 0000000..b86b236
 +    if (m_container) {
 +        m_container->removeEventFilter(this);
 +    }
++    if (m_window) {
++        m_window->removeEventFilter(this);
++    }
 +
++    closePreview();
 +    if (m_overlay) {
-+        // Stop active content first: hidePreview() releases the media
-+        // player and PDF prefetch/render timers living in the overlay's
-+        // Private. A plain hide() would leave them running on the
-+        // about-to-be-orphaned widget.
-+        m_overlay->hidePreview();
 +        // Hide before unparenting so the widget does not briefly appear
 +        // as a top-level window if an animation is in flight. The next
 +        // showPreview() resets any stale animation state.
@@ -589,23 +608,53 @@ index 0000000..b86b236
 +    }
 +
 +    m_container.clear();
++    m_window.clear();
 +    m_view.clear();
-+    m_primed = false;
-+    m_primeTimer->stop();
++}
++
++void QuickLookController::closePreview()
++{
++    if (!m_overlay || !m_overlay->isPreviewActive() || m_closing) {
++        return;
++    }
++
++    m_closing = true;
++    m_overlay->hidePreview();
 +}
 +
 +bool QuickLookController::eventFilter(QObject *watched, QEvent *event)
 +{
-+    if (!m_container || watched != static_cast<QObject *>(m_container.data()) || !m_overlay) {
++    if (!m_container || !m_overlay) {
++        return QObject::eventFilter(watched, event);
++    }
++
++    if (watched == m_window && event->type() == QEvent::ShortcutOverride) {
++        auto *keyEvent = static_cast<QKeyEvent *>(event);
++        if (keyEvent->key() == Qt::Key_Space && keyEvent->modifiers() == Qt::NoModifier && !keyEvent->isAutoRepeat()
++            && (m_overlay->isPreviewActive() || canPreviewSelection())) {
++            keyEvent->accept();
++            return true;
++        }
++        return QObject::eventFilter(watched, event);
++    }
++
++    if (watched != m_container) {
 +        return QObject::eventFilter(watched, event);
 +    }
 +
 +    switch (event->type()) {
 +    case QEvent::KeyPress: {
 +        const auto *keyEvent = static_cast<QKeyEvent *>(event);
-+        if (keyEvent->key() == Qt::Key_Space && !keyEvent->isAutoRepeat() && !m_overlay->isPreviewActive()) {
-+            m_primed = true;
-+            m_primeTimer->start();
++        if (keyEvent->key() == Qt::Key_Space && keyEvent->modifiers() == Qt::NoModifier && !keyEvent->isAutoRepeat()
++            && !m_overlay->isPreviewActive()) {
++            const KFileItemList selectedItems = m_view->selectedItems();
++            if (canPreviewSelection()) {
++                m_overlay->resize(m_container->size());
++                if (m_overlay->showPreview(selectedItems.constFirst().url())) {
++                    m_closing = false;
++                    return true;
++                }
++            }
 +        }
 +        break;
 +    }
@@ -621,52 +670,32 @@ index 0000000..b86b236
 +    return QObject::eventFilter(watched, event);
 +}
 +
-+void QuickLookController::onAboutToActivateItem(const KFileItem &item)
++bool QuickLookController::canPreviewSelection() const
 +{
-+    if (!m_view || !m_overlay || !m_container) {
-+        return;
++    if (!m_view) {
++        return false;
 +    }
-+    if (item.isNull()) {
-+        return;
++    const KFileItemList selectedItems = m_view->selectedItems();
++    if (selectedItems.count() != 1) {
++        return false;
 +    }
-+
-+    const bool quickLookAllowed =
-+        (GeneralSettings::quickLookActivation() == GeneralSettings::EnumQuickLookActivation::DoubleClickOnly)
-+        || m_primed;
-+    if (!quickLookAllowed) {
-+        return;
-+    }
-+
-+    const QString mimeType = item.mimetype();
-+    if (!QuickLookOverlay::isSupportedMimeType(mimeType)) {
-+        return;
-+    }
-+
-+    m_primed = false;
-+    m_primeTimer->stop();
-+    m_overlay->resize(m_container->size());
-+    if (m_overlay->showPreview(item.url())) {
-+        m_view->consumeActivation();
-+    }
++    const KFileItem &item = selectedItems.constFirst();
++    return QuickLookOverlay::isSupportedMimeType(item.mimetype()) && QuickLookContentHandler::isReadableLocalFile(item.url());
 +}
 +
 +void QuickLookController::onPreviewClosed()
 +{
++    m_closing = false;
 +    if (m_container) {
 +        m_container->setFocus();
 +    }
 +}
-+
-+void QuickLookController::onPrimeTimerTimeout()
-+{
-+    m_primed = false;
-+}
 diff --git a/src/views/quicklook/quicklookcontroller.h b/src/views/quicklook/quicklookcontroller.h
 new file mode 100644
-index 0000000..a24e323
+index 0000000..31565c1
 --- /dev/null
 +++ b/src/views/quicklook/quicklookcontroller.h
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,69 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -684,15 +713,13 @@ index 0000000..a24e323
 +#include <QPointer>
 +
 +class DolphinView;
-+class KFileItem;
 +class KItemListContainer;
-+class QTimer;
 +class QuickLookOverlay;
++class QWidget;
 +
 +/**
-+ * Owns the QuickLook overlay widget and all the glue that used to live
-+ * inside DolphinView (Space-to-prime timer, eventFilter for resize, MIME
-+ * gate on activation). The controller follows a single DolphinView at a
++ * Owns the QuickLook overlay widget and handles Space and resize events.
++ * The controller follows a single DolphinView at a
 + * time via attachToView() — DolphinTabPage retargets it whenever the
 + * active pane changes in split view.
 + */
@@ -714,33 +741,36 @@ index 0000000..a24e323
 +    /** Detach from the current view without destroying the controller. */
 +    void detach();
 +
++    /** Close the current preview. Safe to call repeatedly. */
++    void closePreview();
++
 +protected:
 +    bool eventFilter(QObject *watched, QEvent *event) override;
 +
 +private Q_SLOTS:
-+    void onAboutToActivateItem(const KFileItem &item);
 +    void onPreviewClosed();
-+    void onPrimeTimerTimeout();
 +
 +private:
++    bool canPreviewSelection() const;
++
 +    QPointer<DolphinView> m_view;
 +    QPointer<KItemListContainer> m_container;
++    QPointer<QWidget> m_window;
 +    // Overlay is owned by the controller. QPointer guards against the
 +    // container being destroyed before the controller (in which case Qt
 +    // would auto-delete the overlay as a child widget).
 +    QPointer<QuickLookOverlay> m_overlay;
-+    QTimer *m_primeTimer = nullptr;
-+    bool m_primed = false;
++    bool m_closing = false;
 +    QList<QMetaObject::Connection> m_viewConnections;
 +};
 +
 +#endif // QUICKLOOKCONTROLLER_H
 diff --git a/src/views/quicklook/quicklookimagehandler.cpp b/src/views/quicklook/quicklookimagehandler.cpp
 new file mode 100644
-index 0000000..d238898
+index 0000000..b546e5d
 --- /dev/null
 +++ b/src/views/quicklook/quicklookimagehandler.cpp
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,290 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -749,10 +779,31 @@ index 0000000..d238898
 +
 +#include "quicklookimagehandler.h"
 +
++#include <QFile>
++#include <QFileInfo>
 +#include <QImageReader>
 +#include <QTimer>
 +#include <QtConcurrent>
-+#include <limits>
++
++#include <cmath>
++
++namespace
++{
++QSize boundedSize(const QSize &source, const QSize &requested, qint64 maxPixels)
++{
++    if (!source.isValid() || !requested.isValid() || requested.isEmpty()) {
++        return {};
++    }
++
++    QSize size = source.scaled(requested, Qt::KeepAspectRatio);
++    const qint64 pixels = static_cast<qint64>(size.width()) * size.height();
++    if (pixels > maxPixels) {
++        const qreal scale = std::sqrt(static_cast<qreal>(maxPixels) / pixels);
++        size = QSize(qMax(1, qFloor(size.width() * scale)), qMax(1, qFloor(size.height() * scale)));
++    }
++    return size;
++}
++}
 +
 +QuickLookImageHandler::QuickLookImageHandler(QObject *parent)
 +    : QuickLookContentHandler(parent)
@@ -760,20 +811,12 @@ index 0000000..d238898
 +    m_rerenderTimer = new QTimer(this);
 +    m_rerenderTimer->setSingleShot(true);
 +    connect(m_rerenderTimer, &QTimer::timeout, this, &QuickLookImageHandler::rerenderNow);
-+    connect(&m_renderWatcher, &QFutureWatcher<QImage>::finished, this, &QuickLookImageHandler::onRenderFinished);
++    connect(&m_renderWatcher, &QFutureWatcher<DecodeResult>::finished, this, &QuickLookImageHandler::onRenderFinished);
 +}
 +
 +QuickLookImageHandler::~QuickLookImageHandler()
 +{
-+    // Wait for the in-flight QtConcurrent task to settle before our members
-+    // are destroyed — the worker lambda itself captures only values, but the
-+    // watcher's finished signal must not fire into a half-destroyed slot.
-+    m_renderWatcher.cancel();
-+    m_renderWatcher.waitForFinished();
-+    m_renderPending = false;
-+    if (m_rerenderTimer) {
-+        m_rerenderTimer->stop();
-+    }
++    close();
 +}
 +
 +QuickLookContentHandler::Kind QuickLookImageHandler::kind() const
@@ -783,58 +826,46 @@ index 0000000..d238898
 +
 +bool QuickLookImageHandler::open(const QUrl &url)
 +{
-+    if (!url.isLocalFile()) {
++    if (!isReadableLocalFile(url)) {
 +        return false;
 +    }
 +    const QString filePath = url.toLocalFile();
 +
-+    // Cancel any previous work before we begin a fresh load.
-+    m_renderWatcher.cancel();
++    ++m_generation;
++    m_latestSequence = 0;
 +    m_renderPending = false;
 +    m_pendingTargetWidth = 0;
++    m_hasQueuedDecode = false;
 +    if (m_rerenderTimer) {
 +        m_rerenderTimer->stop();
 +    }
 +
-+    QImageReader reader(filePath);
-+    reader.setAutoTransform(true);
-+
-+    const QSize imgSize = reader.size();
-+
-+    // Cap the initial decode to the viewport pixel size so huge source images
-+    // don't pay for a full-resolution decode the overlay can't display anyway.
-+    if (imgSize.isValid() && m_displayArea.isValid() && !m_displayArea.isEmpty()
-+        && (imgSize.width() > m_displayArea.width() || imgSize.height() > m_displayArea.height())) {
-+        QSize scaled = imgSize;
-+        scaled.scale(m_displayArea, Qt::KeepAspectRatio);
-+        reader.setScaledSize(scaled);
-+    }
-+
-+    const QImage image = reader.read();
-+    if (image.isNull()) {
-+        return false;
-+    }
-+
 +    m_filePath = filePath;
-+    m_currentImage = image;
-+    m_originalSize = imgSize.isValid() ? imgSize : image.size();
-+    m_renderedWidth = image.width();
-+    m_renderFilePath.clear();
++    m_currentImage = {};
++    m_originalSize = {};
++    m_renderedWidth = 0;
++
++    DecodeRequest request;
++    request.filePath = filePath;
++    request.displayArea = m_displayArea;
++    request.generation = m_generation;
++    request.sequence = ++m_latestSequence;
++    queueDecode(request);
 +
 +    return true;
 +}
 +
 +void QuickLookImageHandler::close()
 +{
-+    m_renderWatcher.cancel();
++    ++m_generation;
 +    m_renderPending = false;
 +    m_pendingTargetWidth = 0;
++    m_hasQueuedDecode = false;
 +    if (m_rerenderTimer) {
 +        m_rerenderTimer->stop();
 +    }
 +
 +    m_filePath.clear();
-+    m_renderFilePath.clear();
 +    m_currentImage = QImage();
 +    m_originalSize = QSize();
 +    m_renderedWidth = 0;
@@ -909,11 +940,6 @@ index 0000000..d238898
 +
 +void QuickLookImageHandler::rerenderNow()
 +{
-+    if (m_renderPending) {
-+        m_rerenderTimer->start(HiResRerenderDelayMs);
-+        return;
-+    }
-+
 +    if (m_filePath.isEmpty() || !m_originalSize.isValid() || m_pendingTargetWidth <= 0) {
 +        return;
 +    }
@@ -934,57 +960,113 @@ index 0000000..d238898
 +        return;
 +    }
 +
-+    m_renderPending = true;
-+    m_renderFilePath = m_filePath;
-+
-+    const QString filePath = m_filePath;
-+    m_renderWatcher.setFuture(QtConcurrent::run([filePath, origSize, target]() -> QImage {
-+        QImageReader reader(filePath);
-+        reader.setAutoTransform(true);
-+
-+        // Scale by width, unbounded height with KeepAspectRatio — mirrors the
-+        // previous inline implementation so very tall images don't truncate
-+        // to zero-height and get silently rejected by QImageReader.
-+        QSize scaledSize = origSize;
-+        scaledSize.scale(target, std::numeric_limits<int>::max(), Qt::KeepAspectRatio);
-+        reader.setScaledSize(scaledSize);
-+
-+        return reader.read();
-+    }));
-+
-+    Q_EMIT hiResRenderStarted();
++    DecodeRequest request;
++    request.filePath = m_filePath;
++    request.originalSize = origSize;
++    request.targetWidth = target;
++    request.generation = m_generation;
++    request.sequence = ++m_latestSequence;
++    request.kind = DecodeKind::HiRes;
++    queueDecode(request);
 +}
 +
 +void QuickLookImageHandler::onRenderFinished()
 +{
++    m_decodeRunning = false;
++    const DecodeResult result = m_renderWatcher.result();
++    const bool current = result.generation == m_generation && result.sequence == m_latestSequence && result.filePath == m_filePath
++        && !m_filePath.isEmpty();
++
++    if (current && result.kind == DecodeKind::Initial) {
++        if (result.image.isNull()) {
++            Q_EMIT loadFailed();
++        } else {
++            m_currentImage = result.image;
++            m_originalSize = result.originalSize.isValid() ? result.originalSize : result.image.size();
++            m_renderedWidth = result.image.width();
++            Q_EMIT contentReady(result.image);
++        }
++    } else if (current && result.kind == DecodeKind::HiRes && !result.image.isNull()) {
++        const QImage oldImage = m_currentImage;
++        m_currentImage = result.image;
++        m_renderedWidth = result.image.width();
++        Q_EMIT crossfadeReady(result.image, oldImage);
++    }
++
++    if (m_hasQueuedDecode) {
++        const DecodeRequest queued = m_queuedDecode;
++        m_hasQueuedDecode = false;
++        if (queued.generation == m_generation) {
++            startDecode(queued);
++            return;
++        }
++    }
 +    m_renderPending = false;
++}
 +
-+    if (m_renderWatcher.isCanceled()) {
++void QuickLookImageHandler::queueDecode(const DecodeRequest &request)
++{
++    if (m_decodeRunning) {
++        m_queuedDecode = request;
++        m_hasQueuedDecode = true;
 +        return;
 +    }
++    startDecode(request);
++}
 +
-+    if (m_renderFilePath != m_filePath || m_filePath.isEmpty()) {
-+        // A newer load replaced the target; drop this stale result.
-+        return;
++void QuickLookImageHandler::startDecode(const DecodeRequest &request)
++{
++    m_decodeRunning = true;
++    if (request.kind == DecodeKind::HiRes) {
++        m_renderPending = true;
++        Q_EMIT hiResRenderStarted();
 +    }
 +
-+    const QImage image = m_renderWatcher.result();
-+    if (image.isNull()) {
-+        return;
-+    }
++    m_renderWatcher.setFuture(QtConcurrent::run([request]() -> DecodeResult {
++        DecodeResult result;
++        result.filePath = request.filePath;
++        result.generation = request.generation;
++        result.sequence = request.sequence;
++        result.kind = request.kind;
 +
-+    const QImage oldImage = m_currentImage;
-+    m_currentImage = image;
-+    m_renderedWidth = image.width();
++        const QFileInfo info(request.filePath);
++        QFile file(request.filePath);
++        if (!info.exists() || !info.isFile() || !info.isReadable() || !file.open(QIODevice::ReadOnly)) {
++            return result;
++        }
 +
-+    Q_EMIT crossfadeReady(image, oldImage);
++        QImageReader reader(&file);
++        reader.setAutoTransform(true);
++        result.originalSize = reader.size();
++
++        QSize requestedSize;
++        if (request.kind == DecodeKind::Initial) {
++            requestedSize = request.displayArea;
++        } else if (request.originalSize.isValid() && request.targetWidth > 0) {
++            const qreal height = static_cast<qreal>(request.originalSize.height()) * request.targetWidth / request.originalSize.width();
++            requestedSize = QSize(request.targetWidth, qMax(1, qFloor(height)));
++        }
++        const QSize scaledSize = boundedSize(result.originalSize, requestedSize, MaxDecodedPixels);
++        if (scaledSize.isValid() && scaledSize != result.originalSize) {
++            reader.setScaledSize(scaledSize);
++        } else if (result.originalSize.isValid()
++                   && static_cast<qint64>(result.originalSize.width()) * result.originalSize.height() > MaxDecodedPixels) {
++            return result;
++        }
++
++        result.image = reader.read();
++        if (!result.image.isNull() && static_cast<qint64>(result.image.width()) * result.image.height() > MaxDecodedPixels) {
++            result.image = {};
++        }
++        return result;
++    }));
 +}
 diff --git a/src/views/quicklook/quicklookimagehandler.h b/src/views/quicklook/quicklookimagehandler.h
 new file mode 100644
-index 0000000..2a0a4c4
+index 0000000..2e0224e
 --- /dev/null
 +++ b/src/views/quicklook/quicklookimagehandler.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,103 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -1022,10 +1104,8 @@ index 0000000..2a0a4c4
 +    // capped to the display area. The value is stored in device pixels.
 +    void setViewportSize(const QSize &sizePx) override;
 +
-+    // Image-specific API. open() is synchronous: when it returns true the
-+    // initial image is available via currentImage() and no contentReady
-+    // signal is emitted for that first frame. Subsequent hi-res rerenders
-+    // are asynchronous and deliver their result through crossfadeReady().
++    // Image-specific API. Both initial decode and hi-res rerenders are
++    // asynchronous; currentImage() stays null until contentReady().
 +    QImage currentImage() const;
 +    int renderedWidth() const;
 +    QSize originalPixelSize() const;
@@ -1042,17 +1122,46 @@ index 0000000..2a0a4c4
 +
 +private:
 +    static constexpr int HiResRerenderDelayMs = 200;
++    static constexpr qint64 MaxDecodedPixels = 32LL * 1024 * 1024;
++
++    enum class DecodeKind {
++        Initial,
++        HiRes,
++    };
++    struct DecodeRequest {
++        QString filePath;
++        QSize displayArea;
++        QSize originalSize;
++        int targetWidth = 0;
++        quint64 generation = 0;
++        quint64 sequence = 0;
++        DecodeKind kind = DecodeKind::Initial;
++    };
++    struct DecodeResult {
++        QImage image;
++        QSize originalSize;
++        QString filePath;
++        quint64 generation = 0;
++        quint64 sequence = 0;
++        DecodeKind kind = DecodeKind::Initial;
++    };
 +
 +    void rerenderNow();
 +    void onRenderFinished();
++    void queueDecode(const DecodeRequest &request);
++    void startDecode(const DecodeRequest &request);
 +
 +    QString m_filePath;
 +    QImage m_currentImage;
 +    QSize m_originalSize;
 +    int m_renderedWidth = 0;
 +
-+    QFutureWatcher<QImage> m_renderWatcher;
-+    QString m_renderFilePath;
++    QFutureWatcher<DecodeResult> m_renderWatcher;
++    DecodeRequest m_queuedDecode;
++    bool m_hasQueuedDecode = false;
++    bool m_decodeRunning = false;
++    quint64 m_generation = 0;
++    quint64 m_latestSequence = 0;
 +    int m_pendingTargetWidth = 0;
 +    bool m_renderPending = false;
 +
@@ -1063,10 +1172,10 @@ index 0000000..2a0a4c4
 +#endif // QUICKLOOKIMAGEHANDLER_H
 diff --git a/src/views/quicklook/quicklookmediahandler.cpp b/src/views/quicklook/quicklookmediahandler.cpp
 new file mode 100644
-index 0000000..80fb970
+index 0000000..98b2872
 --- /dev/null
 +++ b/src/views/quicklook/quicklookmediahandler.cpp
-@@ -0,0 +1,684 @@
+@@ -0,0 +1,771 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -1084,6 +1193,7 @@ index 0000000..80fb970
 +#include <QPainter>
 +#include <QPainterPath>
 +#include <QTimer>
++#include <QTransform>
 +#include <QVideoFrame>
 +#include <QVideoSink>
 +#include <QtMath>
@@ -1113,7 +1223,7 @@ index 0000000..80fb970
 +
 +bool QuickLookMediaHandler::open(const QUrl &url)
 +{
-+    if (!url.isValid()) {
++    if (!isReadableLocalFile(url)) {
 +        Q_EMIT loadFailed();
 +        return false;
 +    }
@@ -1158,6 +1268,11 @@ index 0000000..80fb970
 +        return QSizeF(m_audioFrame.size());
 +    }
 +    return QSizeF();
++}
++
++void QuickLookMediaHandler::setViewportSize(const QSize &size)
++{
++    m_viewportSize = size;
 +}
 +
 +void QuickLookMediaHandler::computeFFT(std::vector<std::complex<float>> &data)
@@ -1338,11 +1453,13 @@ index 0000000..80fb970
 +
 +void QuickLookMediaHandler::setupVideo(const QUrl &fileUrl)
 +{
-+    cleanupVideo();
-+    cleanupAudio();
++    cleanup();
 +
 +    m_contentType = ContentType::Video;
 +    m_phase = Phase::Loading;
++    m_terminalDelivered = false;
++    m_readyDelivered = false;
++    const quint64 generation = m_generation;
 +
 +    m_audioOutput = new QAudioOutput(this);
 +    m_audioOutput->setVolume(DefaultVolume);
@@ -1358,37 +1475,45 @@ index 0000000..80fb970
 +
 +    m_videoLoadTimer = new QTimer(this);
 +    m_videoLoadTimer->setSingleShot(true);
-+    connect(m_videoLoadTimer, &QTimer::timeout, this, [this]() {
++    connect(m_videoLoadTimer, &QTimer::timeout, this, [this, generation]() {
 +        if (m_phase == Phase::Loading) {
-+            Q_EMIT loadFailed();
++            failOnce(generation);
 +        }
 +    });
 +    m_videoLoadTimer->start(VideoLoadTimeoutMs);
 +
-+    connect(m_mediaPlayer, &QMediaPlayer::errorOccurred, this, [this]() {
-+        Q_EMIT loadFailed();
++    connect(m_mediaPlayer, &QMediaPlayer::errorOccurred, this, [this, generation]() {
++        failOnce(generation);
 +    });
 +
-+    connect(m_videoSink, &QVideoSink::videoFrameChanged, this, &QuickLookMediaHandler::onVideoFrameChanged);
++    connect(m_videoSink, &QVideoSink::videoFrameChanged, this, [this, generation](const QVideoFrame &frame) {
++        if (generation == m_generation) {
++            onVideoFrameChanged(frame);
++        }
++    });
 +
 +    m_mediaPlayer->play();
 +}
 +
 +void QuickLookMediaHandler::setupAudio(const QUrl &fileUrl)
 +{
-+    cleanupVideo();
-+    cleanupAudio();
++    cleanup();
 +
 +    m_contentType = ContentType::Audio;
 +    m_phase = Phase::Animating;
++    m_terminalDelivered = false;
++    m_readyDelivered = false;
++    const quint64 generation = m_generation;
 +    m_vinylAngle = 0.0;
 +    m_audioSamples.clear();
 +    m_audioDecodingDone = false;
 +    m_smoothedSpectrum.clear();
 +
 +    // Generate vinyl image (cached)
-+    if (m_vinylImage.isNull()) {
-+        m_vinylImage = generateVinylImage(AudioComposeSize);
++    const int viewportSide = qMin(m_viewportSize.width(), m_viewportSize.height());
++    m_audioComposeSize = qBound(AudioComposeMinSize, viewportSide > 0 ? viewportSide : AudioComposeMaxSize, AudioComposeMaxSize);
++    if (m_vinylImage.size() != QSize(m_audioComposeSize, m_audioComposeSize)) {
++        m_vinylImage = generateVinylImage(m_audioComposeSize);
 +    }
 +
 +    // Set up audio playback
@@ -1401,7 +1526,11 @@ index 0000000..80fb970
 +    m_mediaPlayer->setLoops(QMediaPlayer::Infinite);
 +
 +    // Status text with playback time
-+    connect(m_mediaPlayer, &QMediaPlayer::positionChanged, this, &QuickLookMediaHandler::onPlaybackPositionChanged);
++    connect(m_mediaPlayer, &QMediaPlayer::positionChanged, this, [this, generation](qint64 position) {
++        if (generation == m_generation) {
++            onPlaybackPositionChanged(position);
++        }
++    });
 +
 +    // Audio decoder for spectrum
 +    m_audioDecoder = new QAudioDecoder(this);
@@ -1413,7 +1542,10 @@ index 0000000..80fb970
 +    m_audioDecoder->setSource(fileUrl);
 +    m_audioSampleRate = 44100;
 +
-+    connect(m_audioDecoder, &QAudioDecoder::bufferReady, this, [this]() {
++    connect(m_audioDecoder, &QAudioDecoder::bufferReady, this, [this, generation]() {
++        if (generation != m_generation || m_phase == Phase::Closing) {
++            return;
++        }
 +        if (m_audioSamples.size() >= MaxAudioDecodeSamples) {
 +            // Drain and stop — prevents internal buffer queue from growing unbounded on long files
 +            m_audioDecoder->stop();
@@ -1424,30 +1556,49 @@ index 0000000..80fb970
 +        if (!buffer.isValid()) {
 +            return;
 +        }
++        const QAudioFormat bufferFormat = buffer.format();
++        if (!bufferFormat.isValid() || bufferFormat.sampleFormat() != QAudioFormat::Float || bufferFormat.channelCount() != 1
++            || bufferFormat.sampleRate() <= 0) {
++            return;
++        }
 +        const float *data = buffer.constData<float>();
-+        const int count = buffer.frameCount();
++        if (!data) {
++            return;
++        }
++        m_audioSampleRate = bufferFormat.sampleRate();
++        const int count = buffer.sampleCount();
 +        for (int i = 0; i < count && m_audioSamples.size() < MaxAudioDecodeSamples; i++) {
 +            m_audioSamples.append(data[i]);
 +        }
 +    });
 +
-+    connect(m_audioDecoder, &QAudioDecoder::finished, this, [this]() {
-+        m_audioDecodingDone = true;
++    connect(m_audioDecoder, &QAudioDecoder::finished, this, [this, generation]() {
++        if (generation == m_generation) {
++            m_audioDecodingDone = true;
++        }
 +    });
 +
-+    connect(m_audioDecoder, qOverload<QAudioDecoder::Error>(&QAudioDecoder::error), this, [this]() {
-+        m_audioDecodingDone = true;
++    connect(m_audioDecoder, qOverload<QAudioDecoder::Error>(&QAudioDecoder::error), this, [this, generation]() {
++        if (generation == m_generation) {
++            m_audioDecodingDone = true;
++        }
 +    });
 +
 +    m_audioSamples.reserve(MaxAudioDecodeSamples);
 +    m_audioDecoder->start();
 +
 +    // Emit the static vinyl as initial frame
-+    Q_EMIT readyToAnimate(m_vinylImage.copy());
++    emitReadyOnce(generation, m_vinylImage);
 +}
 +
 +void QuickLookMediaHandler::cleanup()
 +{
++    if (m_phase == Phase::Closing && !m_mediaPlayer && !m_videoSink && !m_audioOutput && !m_audioDecoder && !m_videoLoadTimer && !m_vinylTimer) {
++        return;
++    }
++    m_phase = Phase::Closing;
++    ++m_generation;
++    m_terminalDelivered = true;
 +    cleanupVideo();
 +    cleanupAudio();
 +}
@@ -1558,13 +1709,14 @@ index 0000000..80fb970
 +                composeAudioFrame();
 +            });
 +        }
-+        m_vinylTimer->start(AudioFrameIntervalMs);
++        if (animationsEnabled()) {
++            m_vinylTimer->start(AudioFrameIntervalMs);
++        }
 +    }
 +}
 +
 +void QuickLookMediaHandler::setClosing()
 +{
-+    m_phase = Phase::Closing;
 +    // Release the media pipeline right away. The overlay keeps the last rendered
 +    // frame in its own QImage/QPixmap for the hide animation, so we don't need to
 +    // keep QMediaPlayer/QVideoSink/QAudioDecoder alive during fade-out.
@@ -1588,7 +1740,7 @@ index 0000000..80fb970
 +
 +void QuickLookMediaHandler::composeAudioFrame()
 +{
-+    const int sz = AudioComposeSize;
++    const int sz = m_audioComposeSize;
 +    if (m_audioFrame.isNull() || m_audioFrame.width() != sz) {
 +        m_audioFrame = QImage(sz, sz, QImage::Format_RGBA8888);
 +    }
@@ -1612,24 +1764,25 @@ index 0000000..80fb970
 +        const qint64 posMs = m_mediaPlayer->position();
 +        const int sampleOffset = static_cast<int>(posMs * m_audioSampleRate / 1000.0);
 +
-+        QVector<float> spectrum = computeSpectrum(m_audioSamples, sampleOffset, FftWindowSize, SpectrumBarCount);
++        const int barCount = qBound(16, sz / 16, SpectrumBarCount);
++        QVector<float> spectrum = computeSpectrum(m_audioSamples, sampleOffset, FftWindowSize, barCount);
 +
 +        // Smooth with previous frame
-+        if (m_smoothedSpectrum.size() != SpectrumBarCount) {
-+            m_smoothedSpectrum.resize(SpectrumBarCount);
++        if (m_smoothedSpectrum.size() != barCount) {
++            m_smoothedSpectrum.resize(barCount);
 +            m_smoothedSpectrum.fill(0.0f);
 +        }
-+        for (int i = 0; i < SpectrumBarCount; i++) {
++        for (int i = 0; i < barCount; i++) {
 +            m_smoothedSpectrum[i] = 0.35f * spectrum[i] + 0.65f * m_smoothedSpectrum[i];
 +        }
 +
 +        // Radial spectrum bars
 +        const float innerR = sz * 0.04f;
 +        const float outerR = sz * VinylLabelRatio * 0.48f;
-+        const float barAngleStep = 360.0f / SpectrumBarCount;
++        const float barAngleStep = 360.0f / barCount;
 +        const float barWidth = 3.5f;
 +
-+        for (int i = 0; i < SpectrumBarCount; i++) {
++        for (int i = 0; i < barCount; i++) {
 +            const float angle = barAngleStep * i;
 +            const float magnitude = m_smoothedSpectrum[i];
 +            const float barLen = qMax(2.0f, magnitude * (outerR - innerR));
@@ -1694,9 +1847,14 @@ index 0000000..80fb970
 +        return;
 +    }
 +
-+    // During playback, skip this frame if the previous one hasn't been painted yet
-+    if (m_phase == Phase::Playing && m_videoFramePending) {
-+        return;
++    // Throttle before the expensive GPU/CPU conversion. A consumed-frame flag
++    // alone is ineffective with direct signal delivery because painting clears
++    // it before the next queued frame arrives.
++    if (m_phase == Phase::Playing) {
++        if (m_videoFramePending || (m_lastVideoFrameTimer.isValid() && m_lastVideoFrameTimer.elapsed() < VideoFrameIntervalMs)) {
++            return;
++        }
++        m_lastVideoFrameTimer.restart();
 +    }
 +
 +    QImage image = f.toImage();
@@ -1704,9 +1862,28 @@ index 0000000..80fb970
 +        return;
 +    }
 +
-+    // Downscale to display size — no point processing 4K pixels we won't show
-+    const int maxW = m_videoDisplaySize.isValid() ? m_videoDisplaySize.width() : VideoMaxDisplayWidth;
-+    const int maxH = m_videoDisplaySize.isValid() ? m_videoDisplaySize.height() : VideoMaxDisplayHeight;
++    // toImage() deliberately ignores presentation transforms.
++#if QT_VERSION >= QT_VERSION_CHECK(6, 7, 0)
++    const int rotation = static_cast<int>(f.rotation());
++    const bool mirrored = f.mirrored();
++#else
++    const int rotation = static_cast<int>(f.rotationAngle());
++    const bool mirrored = f.mirrored();
++#endif
++    if (rotation != 0) {
++        image = image.transformed(QTransform().rotate(rotation));
++    }
++    if (mirrored) {
++#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
++        image = image.flipped(Qt::Horizontal);
++#else
++        image = image.mirrored(true, false);
++#endif
++    }
++
++    // Downscale to display size — no point retaining 4K pixels we won't show.
++    const int maxW = m_videoDisplaySize.isValid() ? qBound(1, m_videoDisplaySize.width(), VideoMaxDisplayWidth) : VideoMaxDisplayWidth;
++    const int maxH = m_videoDisplaySize.isValid() ? qBound(1, m_videoDisplaySize.height(), VideoMaxDisplayHeight) : VideoMaxDisplayHeight;
 +    if (image.width() > maxW || image.height() > maxH) {
 +        image = image.scaled(maxW, maxH, Qt::KeepAspectRatio, Qt::FastTransformation);
 +    }
@@ -1719,7 +1896,7 @@ index 0000000..80fb970
 +        }
 +        m_phase = Phase::Animating;
 +        m_mediaPlayer->pause();
-+        Q_EMIT readyToAnimate(image);
++        emitReadyOnce(m_generation, image);
 +        return;
 +    }
 +
@@ -1748,15 +1925,34 @@ index 0000000..80fb970
 +        return QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
 +    };
 +
-+    m_statusText = QStringLiteral(" — %1 / %2").arg(formatTime(curSec), formatTime(durSec));
++    m_statusText = QStringLiteral("%1 / %2").arg(formatTime(curSec), formatTime(durSec));
 +    Q_EMIT statusTextChanged(m_statusText);
++}
++
++void QuickLookMediaHandler::failOnce(quint64 generation)
++{
++    if (generation != m_generation || m_terminalDelivered || m_phase == Phase::Closing) {
++        return;
++    }
++    m_terminalDelivered = true;
++    Q_EMIT loadFailed();
++}
++
++void QuickLookMediaHandler::emitReadyOnce(quint64 generation, const QImage &image)
++{
++    if (generation != m_generation || m_readyDelivered || m_terminalDelivered || m_phase == Phase::Closing || image.isNull()) {
++        return;
++    }
++    m_readyDelivered = true;
++    m_terminalDelivered = true;
++    Q_EMIT readyToAnimate(image);
 +}
 diff --git a/src/views/quicklook/quicklookmediahandler.h b/src/views/quicklook/quicklookmediahandler.h
 new file mode 100644
-index 0000000..ee0016c
+index 0000000..c1be657
 --- /dev/null
 +++ b/src/views/quicklook/quicklookmediahandler.h
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,146 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -1772,6 +1968,7 @@ index 0000000..ee0016c
 +#include <vector>
 +
 +#include <QImage>
++#include <QElapsedTimer>
 +#include <QSize>
 +#include <QUrl>
 +#include <QVector>
@@ -1810,6 +2007,7 @@ index 0000000..ee0016c
 +    bool isReady() const override;
 +    QString statusText() const override;
 +    QSizeF logicalContentSize() const override;
++    void setViewportSize(const QSize &size) override;
 +    void onShowAnimationFinished() override;
 +    void setClosing() override;
 +
@@ -1840,9 +2038,11 @@ index 0000000..ee0016c
 +    static constexpr qreal DefaultVolume = 0.5;
 +    static constexpr int VideoMaxDisplayWidth = 1920;
 +    static constexpr int VideoMaxDisplayHeight = 1080;
-+    static constexpr int AudioComposeSize = 800;
++    static constexpr int AudioComposeMaxSize = 800;
++    static constexpr int AudioComposeMinSize = 256;
 +    static constexpr qreal VinylDegreesPerFrame = 33.0 * 360.0 / 60.0 / 30.0;
 +    static constexpr int AudioFrameIntervalMs = 33;
++    static constexpr int VideoFrameIntervalMs = 33;
 +    static constexpr int FftWindowSize = 1024;
 +    static constexpr int SpectrumBarCount = 48;
 +    static constexpr qreal VinylLabelRatio = 0.33;
@@ -1856,6 +2056,8 @@ index 0000000..ee0016c
 +    void composeAudioFrame();
 +    void onVideoFrameChanged(const QVideoFrame &frame);
 +    void onPlaybackPositionChanged(qint64 position);
++    void failOnce(quint64 generation);
++    void emitReadyOnce(quint64 generation, const QImage &image);
 +
 +    static QImage generateVinylImage(int size);
 +    static void computeFFT(std::vector<std::complex<float>> &data);
@@ -1875,6 +2077,7 @@ index 0000000..ee0016c
 +    QTimer *m_vinylTimer = nullptr;
 +    QAudioDecoder *m_audioDecoder = nullptr;
 +    QImage m_audioFrame;
++    int m_audioComposeSize = AudioComposeMaxSize;
 +    QVector<float> m_audioSamples;
 +    int m_audioSampleRate = 44100;
 +    bool m_audioDecodingDone = false;
@@ -1883,6 +2086,12 @@ index 0000000..ee0016c
 +    // Video frame throttling
 +    bool m_videoFramePending = false;
 +    QSize m_videoDisplaySize;
++    QSize m_viewportSize;
++    QElapsedTimer m_lastVideoFrameTimer;
++
++    quint64 m_generation = 0;
++    bool m_terminalDelivered = false;
++    bool m_readyDelivered = false;
 +
 +    // Cached status caption — kept in sync with statusTextChanged emits so the
 +    // base-class statusText() accessor can return the current value.
@@ -1892,10 +2101,10 @@ index 0000000..ee0016c
 +#endif // QUICKLOOKMEDIAHANDLER_H
 diff --git a/src/views/quicklook/quicklookoverlay.cpp b/src/views/quicklook/quicklookoverlay.cpp
 new file mode 100644
-index 0000000..8d2ebaa
+index 0000000..31ad4bb
 --- /dev/null
 +++ b/src/views/quicklook/quicklookoverlay.cpp
-@@ -0,0 +1,1418 @@
+@@ -0,0 +1,1505 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -1929,6 +2138,8 @@ index 0000000..8d2ebaa
 +#include <QSizeF>
 +#include <QTimer>
 +#include <QWheelEvent>
++#include <QStyle>
++#include <KLocalizedString>
 +#ifdef HAVE_QTPDF
 +#include <QInputDialog>
 +#include <QLineEdit>
@@ -1947,7 +2158,6 @@ index 0000000..8d2ebaa
 +constexpr qreal ZoomMin = 1.0;
 +constexpr qreal ZoomMax = 5.0;
 +constexpr qreal ZoomStep = 0.15;
-+constexpr int HiResCrossfadeDurationMs = 150;
 +constexpr int MaxImageWidth = 3840;
 +constexpr int MaxImageHeight = 2160;
 +static constexpr bool ShowFilename = false;
@@ -2003,6 +2213,7 @@ index 0000000..8d2ebaa
 +
 +    // Painting helpers
 +    void setContentImage(const QImage &image);
++    void setStatusText(const QString &text);
 +    void startCrossfade(const QImage &newImage, const QImage &oldImage);
 +    void updatePixmap();
 +    void drawPdfSpinner(QPainter &painter, const QRectF &contentRect);
@@ -2064,6 +2275,7 @@ index 0000000..8d2ebaa
 +    qreal m_hiResCrossfade = 1.0;
 +    bool m_hiResCrossfading = false;
 +    QElapsedTimer m_hiResFadeTimer;
++    int m_hiResCrossfadeDuration = 150;
 +
 +    QTimer *m_frameTimer = nullptr;
 +
@@ -2105,6 +2317,20 @@ index 0000000..8d2ebaa
 +    : q(q)
 +{
 +    m_imageHandler = new QuickLookImageHandler(q);
++    QObject::connect(m_imageHandler, &QuickLookContentHandler::contentReady, q, [this](const QImage &image) {
++        if (!m_active || m_contentType != QuickLookContentKind::Image) {
++            return;
++        }
++        setContentImage(image);
++        m_hasAlphaChannel = image.hasAlphaChannel();
++        setStatusText({});
++        updatePixmap();
++    });
++    QObject::connect(m_imageHandler, &QuickLookContentHandler::loadFailed, q, [this]() {
++        if (m_active && m_contentType == QuickLookContentKind::Image) {
++            closeImmediately();
++        }
++    });
 +    QObject::connect(m_imageHandler, &QuickLookContentHandler::crossfadeReady, q, [this, q = this->q](const QImage &newImage, const QImage &oldImage) {
 +        if (!m_active || m_contentType != QuickLookContentKind::Image) {
 +            return;
@@ -2122,8 +2348,18 @@ index 0000000..8d2ebaa
 +    m_frameTimer->setInterval(FrameIntervalMs);
 +    QObject::connect(m_frameTimer, &QTimer::timeout, q, [this, q = this->q]() { advanceFrame(); });
 +
++    const int styleDuration = q->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, q);
++    // Breeze maps KDE's global animation-speed setting to this style hint.
++    // Keeping the private rendering library on the style API also avoids a
++    // reverse dependency on Dolphin's executable-only GlobalConfig symbol.
++    m_animDuration = qMax(0, styleDuration);
++    m_zoomAnimDuration = m_animDuration;
++    m_hiResCrossfadeDuration = m_animDuration > 0 ? qMax(1, m_animDuration * 3 / 5) : 0;
++    m_imageHandler->setAnimationsEnabled(m_animDuration > 0);
++
 +#ifdef HAVE_QTPDF
 +    m_pdfHandler = new QuickLookPdfHandler(q);
++    m_pdfHandler->setAnimationsEnabled(m_animDuration > 0);
 +    QObject::connect(m_pdfHandler, &QuickLookPdfHandler::contentReady, q, [this, q = this->q](const QImage &image) {
 +        if (!m_active || m_contentType != QuickLookContentKind::Pdf) {
 +            return;
@@ -2151,21 +2387,21 @@ index 0000000..8d2ebaa
 +            return;
 +        }
 +        if (result == QuickLookPdfHandler::LoadResult::Success) {
-+            m_statusText = m_pdfHandler->statusText();
++            setStatusText(m_pdfHandler->statusText());
 +            q->update();
 +        } else if (result == QuickLookPdfHandler::LoadResult::PasswordRequired) {
 +            bool ok = false;
 +            for (int attempt = 0; attempt < 3; ++attempt) {
-+                const QString title = attempt == 0 ? q->tr("Protected PDF") : q->tr("Protected PDF — Wrong password");
++                const QString title = attempt == 0 ? i18n("Protected PDF") : i18n("Protected PDF — Wrong password");
 +                const QString password =
-+                    QInputDialog::getText(q->parentWidget(), title, q->tr("Enter password to open this PDF:"), QLineEdit::Password, QString(), &ok);
++                    QInputDialog::getText(q->parentWidget(), title, i18n("Enter password to open this PDF:"), QLineEdit::Password, QString(), &ok);
 +
 +                if (!ok || password.isEmpty()) {
 +                    break;
 +                }
 +
 +                if (m_pdfHandler->unlockWithPassword(password)) {
-+                    m_statusText = m_pdfHandler->statusText();
++                    setStatusText(m_pdfHandler->statusText());
 +                    updatePixmap();
 +                    q->update();
 +                    return;
@@ -2182,8 +2418,9 @@ index 0000000..8d2ebaa
 +
 +#ifdef HAVE_QTMULTIMEDIA
 +    m_mediaHandler = new QuickLookMediaHandler(q);
++    m_mediaHandler->setAnimationsEnabled(m_animDuration > 0);
 +    QObject::connect(m_mediaHandler, &QuickLookMediaHandler::contentReady, q, [this, q = this->q](const QImage &image) {
-+        if (m_contentType != QuickLookContentKind::Video && m_contentType != QuickLookContentKind::Audio) {
++        if (!m_active || (m_contentType != QuickLookContentKind::Video && m_contentType != QuickLookContentKind::Audio)) {
 +            return;
 +        }
 +        setContentImage(image);
@@ -2192,10 +2429,11 @@ index 0000000..8d2ebaa
 +        q->update();
 +    });
 +    QObject::connect(m_mediaHandler, &QuickLookMediaHandler::readyToAnimate, q, [this, q = this->q](const QImage &firstFrame) {
-+        if (m_contentType != QuickLookContentKind::Video && m_contentType != QuickLookContentKind::Audio) {
++        if (!m_active || (m_contentType != QuickLookContentKind::Video && m_contentType != QuickLookContentKind::Audio)) {
 +            return;
 +        }
 +        setContentImage(firstFrame);
++        setStatusText(m_mediaHandler->statusText());
 +        updatePixmap();
 +
 +        if (!q->parentWidget()) {
@@ -2211,16 +2449,16 @@ index 0000000..8d2ebaa
 +        startShowAnimation();
 +    });
 +    QObject::connect(m_mediaHandler, &QuickLookMediaHandler::loadFailed, q, [this, q = this->q]() {
-+        if (m_contentType != QuickLookContentKind::Video && m_contentType != QuickLookContentKind::Audio) {
++        if (!m_active || (m_contentType != QuickLookContentKind::Video && m_contentType != QuickLookContentKind::Audio)) {
 +            return;
 +        }
 +        closeImmediately();
 +    });
 +    QObject::connect(m_mediaHandler, &QuickLookMediaHandler::statusTextChanged, q, [this, q = this->q](const QString &text) {
-+        if (m_contentType != QuickLookContentKind::Video && m_contentType != QuickLookContentKind::Audio) {
++        if (!m_active || (m_contentType != QuickLookContentKind::Video && m_contentType != QuickLookContentKind::Audio)) {
 +            return;
 +        }
-+        m_statusText = text;
++        setStatusText(text);
 +    });
 +#endif
 +
@@ -2256,7 +2494,7 @@ index 0000000..8d2ebaa
 +
 +bool QuickLookOverlay::Private::showPreview(const QUrl &fileUrl)
 +{
-+    if (!fileUrl.isLocalFile()) {
++    if (!QuickLookContentHandler::isReadableLocalFile(fileUrl)) {
 +        return false;
 +    }
 +
@@ -2370,17 +2608,16 @@ index 0000000..8d2ebaa
 +
 +bool QuickLookOverlay::Private::loadImage(const QUrl &fileUrl)
 +{
++    m_contentType = QuickLookContentKind::Image;
++    m_activeHandler = m_imageHandler;
++    m_contentImage = {};
++    m_hasAlphaChannel = false;
++    m_hiResCrossfading = false;
++    setStatusText(i18n("Loading…"));
 +    m_imageHandler->setViewportSize(displayAreaPixels());
 +    if (!m_imageHandler->open(fileUrl)) {
 +        return false;
 +    }
-+
-+    m_contentImage = m_imageHandler->currentImage();
-+    m_hasAlphaChannel = m_contentImage.hasAlphaChannel();
-+    m_contentType = QuickLookContentKind::Image;
-+    m_activeHandler = m_imageHandler;
-+    m_hiResCrossfading = false;
-+    m_statusText.clear();
 +
 +    updatePixmap();
 +    return true;
@@ -2393,7 +2630,7 @@ index 0000000..8d2ebaa
 +    m_hasAlphaChannel = false;
 +    m_imageHandler->close();
 +    m_activeHandler = m_pdfHandler;
-+    m_statusText.clear();
++    setStatusText(i18n("Loading…"));
 +    m_currentUrl = fileUrl;
 +    m_active = true;
 +    resetZoom();
@@ -2440,7 +2677,10 @@ index 0000000..8d2ebaa
 +    m_hasAlphaChannel = false;
 +    m_contentType = type;
 +    m_activeHandler = m_mediaHandler;
++    setStatusText(type == QuickLookContentKind::Audio ? i18n("Loading audio…") : i18n("Loading video…"));
 +    resetZoom();
++
++    m_mediaHandler->setViewportSize(displayAreaPixels());
 +
 +    if (type == QuickLookContentKind::Video) {
 +        if (q->parentWidget()) {
@@ -2465,8 +2705,21 @@ index 0000000..8d2ebaa
 +    m_contentImage = image;
 +}
 +
++void QuickLookOverlay::Private::setStatusText(const QString &text)
++{
++    m_statusText = text;
++    q->setAccessibleDescription(text);
++    q->update();
++}
++
 +void QuickLookOverlay::Private::startCrossfade(const QImage &newImage, const QImage &oldImage)
 +{
++    if (m_hiResCrossfadeDuration == 0) {
++        setContentImage(newImage);
++        updatePixmap();
++        m_hiResCrossfading = false;
++        return;
++    }
 +    m_crossfadeOldImage = oldImage;
 +    setContentImage(newImage);
 +    const qreal dpr = q->devicePixelRatioF();
@@ -2513,11 +2766,12 @@ index 0000000..8d2ebaa
 +
 +    painter.setOpacity(m_animationProgress * 0.7);
 +
++    const QColor accent = q->palette().color(QPalette::Highlight);
 +    QConicalGradient gradient(QPointF(cx, cy), m_hiResSpinnerAngle);
-+    gradient.setColorAt(0.0, QColor(255, 255, 255, 200));
-+    gradient.setColorAt(0.6, QColor(255, 255, 255, 30));
-+    gradient.setColorAt(0.75, QColor(255, 255, 255, 0));
-+    gradient.setColorAt(1.0, QColor(255, 255, 255, 0));
++    gradient.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), 220));
++    gradient.setColorAt(0.6, QColor(accent.red(), accent.green(), accent.blue(), 30));
++    gradient.setColorAt(0.75, QColor(accent.red(), accent.green(), accent.blue(), 0));
++    gradient.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0));
 +
 +    QPen spinnerPen(QBrush(gradient), penWidth, Qt::SolidLine, Qt::RoundCap);
 +    painter.setPen(spinnerPen);
@@ -2539,11 +2793,12 @@ index 0000000..8d2ebaa
 +
 +    // Smooth gradient spinner
 +    painter.setOpacity(m_animationProgress * PdfSpinnerOpacity);
++    const QColor accent = q->palette().color(QPalette::Highlight);
 +    QConicalGradient gradient(center, m_pdfHandler->spinnerAngle());
-+    gradient.setColorAt(0.0, QColor(255, 255, 255, PdfSpinnerGradientAlpha));
-+    gradient.setColorAt(0.65, QColor(255, 255, 255, PdfSpinnerGradientMidAlpha));
-+    gradient.setColorAt(0.75, QColor(255, 255, 255, 0));
-+    gradient.setColorAt(1.0, QColor(255, 255, 255, 0));
++    gradient.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), PdfSpinnerGradientAlpha));
++    gradient.setColorAt(0.65, QColor(accent.red(), accent.green(), accent.blue(), PdfSpinnerGradientMidAlpha));
++    gradient.setColorAt(0.75, QColor(accent.red(), accent.green(), accent.blue(), 0));
++    gradient.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0));
 +
 +    QPen spinnerPen(QBrush(gradient), PdfSpinnerPenWidth, Qt::SolidLine, Qt::RoundCap);
 +    painter.setPen(spinnerPen);
@@ -2580,7 +2835,9 @@ index 0000000..8d2ebaa
 +        painter.setOpacity(m_animationProgress * btnOpacity);
 +
 +        painter.setPen(Qt::NoPen);
-+        painter.setBrush(QColor(255, 255, 255, PdfArrowBgAlpha));
++        QColor buttonColor = q->palette().color(QPalette::Button);
++        buttonColor.setAlpha(PdfArrowBgAlpha);
++        painter.setBrush(buttonColor);
 +        painter.drawRoundedRect(btnRect, PdfArrowBtnRadius, PdfArrowBtnRadius);
 +
 +        const int pad = PdfArrowInnerPad;
@@ -2592,7 +2849,7 @@ index 0000000..8d2ebaa
 +        } else {
 +            triangle << QPointF(c.x(), c.y() + half) << QPointF(c.x() - half, c.y() - half) << QPointF(c.x() + half, c.y() - half);
 +        }
-+        painter.setBrush(QColor(255, 255, 255));
++        painter.setBrush(q->palette().color(QPalette::ButtonText));
 +        painter.drawPolygon(triangle);
 +    };
 +
@@ -2646,19 +2903,25 @@ index 0000000..8d2ebaa
 +    // Background track
 +    painter.setOpacity(m_animationProgress * 0.9);
 +    painter.setPen(Qt::NoPen);
-+    painter.setBrush(QColor(255, 255, 255, ProgressBarBgAlpha));
++    QColor trackColor = q->palette().color(QPalette::Mid);
++    trackColor.setAlpha(ProgressBarBgAlpha);
++    painter.setBrush(trackColor);
 +    painter.drawRoundedRect(barRect, ProgressBarRadius, ProgressBarRadius);
 +
 +    // Filled portion
 +    const QRectF fillRect(barX, barY, barW * progress, ProgressBarHeight);
-+    painter.setBrush(QColor(255, 255, 255, ProgressBarFillAlpha));
++    QColor fillColor = q->palette().color(QPalette::Highlight);
++    fillColor.setAlpha(ProgressBarFillAlpha);
++    painter.setBrush(fillColor);
 +    painter.drawRoundedRect(fillRect, ProgressBarRadius, ProgressBarRadius);
 +
 +    // Time text below bar
 +    QFont timeFont = q->font();
 +    timeFont.setPixelSize(ProgressTimeFontSize);
 +    painter.setFont(timeFont);
-+    painter.setPen(QColor(255, 255, 255, static_cast<int>(200 * m_animationProgress)));
++    QColor timeColor = q->palette().color(QPalette::BrightText);
++    timeColor.setAlpha(static_cast<int>(200 * m_animationProgress));
++    painter.setPen(timeColor);
 +    const QRectF timeRect(barX, barRect.bottom() + ProgressTimeMargin, barW, ProgressTimeFontSize + 4);
 +    painter.drawText(timeRect, Qt::AlignHCenter | Qt::AlignTop, timeText);
 +
@@ -2683,6 +2946,10 @@ index 0000000..8d2ebaa
 +    if (m_pixmap.isNull()) {
 +        // Draw spinner during async PDF loading
 +        drawPdfSpinner(painter, QRectF(q->rect()));
++        if (!m_statusText.isEmpty()) {
++            painter.setPen(q->palette().color(QPalette::BrightText));
++            painter.drawText(q->rect().adjusted(0, 0, 0, -ContentPadding), Qt::AlignHCenter | Qt::AlignBottom, m_statusText);
++        }
 +        return;
 +    }
 +
@@ -2733,13 +3000,22 @@ index 0000000..8d2ebaa
 +    painter.restore();
 +
 +    // 5. Label text
++    QString labelText;
 +    if constexpr (ShowFilename) {
++        labelText = m_currentUrl.fileName();
++    }
++    if (!m_statusText.isEmpty()) {
++        labelText += labelText.isEmpty() ? m_statusText : QStringLiteral(" — ") + m_statusText;
++    }
++    if (!labelText.isEmpty()) {
 +        QFont labelFont = q->font();
 +        labelFont.setBold(true);
-+        painter.setPen(QColor(255, 255, 255, static_cast<int>(255 * m_animationProgress)));
++        QColor labelColor = q->palette().color(QPalette::BrightText);
++        labelColor.setAlpha(static_cast<int>(255 * m_animationProgress));
++        painter.setPen(labelColor);
 +        painter.setFont(labelFont);
 +        const QRect textRect(0, anchorRect.bottom() + TextSpacing, q->width(), TextHeight);
-+        painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, m_currentUrl.fileName() + m_statusText);
++        painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, labelText);
 +    }
 +
 +    // 6. Video progress bar
@@ -2878,6 +3154,13 @@ index 0000000..8d2ebaa
 +    m_animEndValue = 1.0;
 +    m_animForward = true;
 +    m_animating = true;
++    if (m_animDuration == 0) {
++        m_animationProgress = 1.0;
++        m_animating = false;
++        onAnimationFinished();
++        q->update();
++        return;
++    }
 +    m_animTimer.start();
 +    m_frameTimer->start();
 +}
@@ -2888,6 +3171,12 @@ index 0000000..8d2ebaa
 +    m_animEndValue = 0.0;
 +    m_animForward = false;
 +    m_animating = true;
++    if (m_animDuration == 0) {
++        m_animationProgress = 0.0;
++        m_animating = false;
++        onAnimationFinished();
++        return;
++    }
 +    m_animTimer.start();
 +    m_frameTimer->start();
 +}
@@ -2978,6 +3267,12 @@ index 0000000..8d2ebaa
 +
 +void QuickLookOverlay::Private::animateZoomReset()
 +{
++    if (m_zoomAnimDuration == 0) {
++        resetZoom();
++        scheduleHiResRerender();
++        q->update();
++        return;
++    }
 +    m_zoomAnimStartFactor = m_zoomFactor;
 +    m_zoomAnimStartPan = m_panOffset;
 +    m_zoomAnimating = true;
@@ -3001,7 +3296,7 @@ index 0000000..8d2ebaa
 +    }
 +
 +    const qreal elapsed = static_cast<qreal>(m_hiResFadeTimer.elapsed());
-+    m_hiResCrossfade = qBound(0.0, elapsed / HiResCrossfadeDurationMs, 1.0);
++    m_hiResCrossfade = qBound(0.0, elapsed / m_hiResCrossfadeDuration, 1.0);
 +    if (m_hiResCrossfade >= 1.0) {
 +        m_hiResCrossfading = false;
 +        m_crossfadeOldImage = QImage();
@@ -3072,14 +3367,14 @@ index 0000000..8d2ebaa
 +        if (m_pdfArrowUpRect.contains(pos) && m_pdfHandler->currentPage() > 0) {
 +            resetZoom();
 +            m_pdfHandler->navigatePage(-1);
-+            m_statusText = m_pdfHandler->statusText();
++            setStatusText(m_pdfHandler->statusText());
 +            event->accept();
 +            return;
 +        }
 +        if (m_pdfArrowDownRect.contains(pos) && m_pdfHandler->currentPage() < m_pdfHandler->totalPages() - 1) {
 +            resetZoom();
 +            m_pdfHandler->navigatePage(1);
-+            m_statusText = m_pdfHandler->statusText();
++            setStatusText(m_pdfHandler->statusText());
 +            event->accept();
 +            return;
 +        }
@@ -3179,7 +3474,7 @@ index 0000000..8d2ebaa
 +        if (event->key() == Qt::Key_Up || event->key() == Qt::Key_PageUp) {
 +            resetZoom();
 +            m_pdfHandler->navigatePage(-1);
-+            m_statusText = m_pdfHandler->statusText();
++            setStatusText(m_pdfHandler->statusText());
 +            event->accept();
 +            return;
 +        }
@@ -3216,6 +3511,7 @@ index 0000000..8d2ebaa
 +    , d(std::make_unique<Private>(this))
 +{
 +    setFocusPolicy(Qt::StrongFocus);
++    setAccessibleName(i18n("Quick Look preview"));
 +}
 +
 +QuickLookOverlay::~QuickLookOverlay() = default;
@@ -3316,10 +3612,10 @@ index 0000000..8d2ebaa
 +}
 diff --git a/src/views/quicklook/quicklookoverlay.h b/src/views/quicklook/quicklookoverlay.h
 new file mode 100644
-index 0000000..f911fae
+index 0000000..fb6bd93
 --- /dev/null
 +++ b/src/views/quicklook/quicklookoverlay.h
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,69 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -3328,6 +3624,8 @@ index 0000000..f911fae
 +
 +#ifndef QUICKLOOKOVERLAY_H
 +#define QUICKLOOKOVERLAY_H
++
++#include "dolphin_export.h"
 +
 +#include <QString>
 +#include <QUrl>
@@ -3351,7 +3649,7 @@ index 0000000..f911fae
 + * Dolphin's existing `std::unique_ptr<QProxyStyle> m_proxyStyle` precedent
 + * in @ref DolphinView for owning private implementation state.
 + */
-+class QuickLookOverlay : public QWidget
++class DOLPHIN_EXPORT QuickLookOverlay : public QWidget
 +{
 +    Q_OBJECT
 +    Q_PROPERTY(qreal animationProgress READ animationProgress WRITE setAnimationProgress)
@@ -3389,10 +3687,10 @@ index 0000000..f911fae
 +#endif // QUICKLOOKOVERLAY_H
 diff --git a/src/views/quicklook/quicklookpdfhandler.cpp b/src/views/quicklook/quicklookpdfhandler.cpp
 new file mode 100644
-index 0000000..55d884c
+index 0000000..ddd696b
 --- /dev/null
 +++ b/src/views/quicklook/quicklookpdfhandler.cpp
-@@ -0,0 +1,588 @@
+@@ -0,0 +1,653 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -3406,6 +3704,11 @@ index 0000000..55d884c
 +#include <QPainter>
 +#include <QRect>
 +#include <QTimer>
++
++#include <KLocalizedString>
++
++#include <algorithm>
++#include <cmath>
 +
 +namespace
 +{
@@ -3437,11 +3740,6 @@ index 0000000..55d884c
 +    : QuickLookContentHandler(parent)
 +{
 +    m_pdfDoc = new QPdfDocument(this);
-+    m_pdfRenderer = new QPdfPageRenderer(this);
-+    m_pdfRenderer->setDocument(m_pdfDoc);
-+    m_pdfRenderer->setRenderMode(QPdfPageRenderer::RenderMode::MultiThreaded);
-+
-+    connect(m_pdfRenderer, &QPdfPageRenderer::pageRendered, this, &QuickLookPdfHandler::onPageRendered);
 +
 +    m_hiResRenderTimer = new QTimer(this);
 +    m_hiResRenderTimer->setSingleShot(true);
@@ -3472,7 +3770,7 @@ index 0000000..55d884c
 +
 +bool QuickLookPdfHandler::open(const QUrl &url)
 +{
-+    if (!url.isValid() || !url.isLocalFile()) {
++    if (!isReadableLocalFile(url)) {
 +        Q_EMIT loadFailed();
 +        return false;
 +    }
@@ -3504,6 +3802,8 @@ index 0000000..55d884c
 +    // Bump the generation so any render still in flight from the previous
 +    // document is discarded in onPageRendered.
 +    ++m_generation;
++    m_closed = false;
++    resetRenderer();
 +
 +    m_pdfDoc->close();
 +    m_filePath = filePath;
@@ -3514,6 +3814,7 @@ index 0000000..55d884c
 +    m_currentImage = QImage();
 +    m_previewRequestId = 0;
 +    m_hiResRequestId = 0;
++    m_pendingRequests.clear();
 +    m_pageLoading = true;
 +    startSpinner();
 +    Q_EMIT pageLoadingChanged(true);
@@ -3522,8 +3823,9 @@ index 0000000..55d884c
 +    // for local files and will freeze the GUI on pathological input. A hard
 +    // size cap is crude but effective; anything larger falls through to the
 +    // default application.
++    const QUrl fileUrl = QUrl::fromLocalFile(filePath);
 +    const QFileInfo fileInfo(filePath);
-+    if (fileInfo.exists() && fileInfo.size() > MaxPdfFileSizeBytes) {
++    if (!isReadableLocalFile(fileUrl) || fileInfo.size() <= 0 || fileInfo.size() > MaxPdfFileSizeBytes) {
 +        stopSpinner();
 +        m_pageLoading = false;
 +        Q_EMIT pageLoadingChanged(false);
@@ -3578,6 +3880,7 @@ index 0000000..55d884c
 +    m_pdfDoc->setPassword(QString());
 +
 +    ++m_generation;
++    resetRenderer();
 +    m_totalPages = m_pdfDoc->pageCount();
 +    m_currentPage = 0;
 +    m_pageCache.clear();
@@ -3585,6 +3888,7 @@ index 0000000..55d884c
 +    m_currentImage = QImage();
 +    m_previewRequestId = 0;
 +    m_hiResRequestId = 0;
++    m_pendingRequests.clear();
 +    m_pageLoading = true;
 +    startSpinner();
 +    Q_EMIT pageLoadingChanged(true);
@@ -3594,6 +3898,10 @@ index 0000000..55d884c
 +
 +void QuickLookPdfHandler::cleanup()
 +{
++    if (m_closed) {
++        return;
++    }
++    m_closed = true;
 +    cancelPendingRenders();
 +    m_pdfDoc->close();
 +    m_pageCache.clear();
@@ -3706,9 +4014,9 @@ index 0000000..55d884c
 +QString QuickLookPdfHandler::statusText() const
 +{
 +    if (m_totalPages > 1) {
-+        return QStringLiteral(" — Page %1 of %2").arg(m_currentPage + 1).arg(m_totalPages);
++        return i18n("Page %1 of %2", m_currentPage + 1, m_totalPages);
 +    }
-+    return QStringLiteral(" — 1 page");
++    return i18n("1 page");
 +}
 +
 +QSizeF QuickLookPdfHandler::pageLogicalSize() const
@@ -3725,6 +4033,11 @@ index 0000000..55d884c
 +
 +void QuickLookPdfHandler::requestPage(int pageIndex, QSize size)
 +{
++    size = boundedRenderSize(size.width(), size.height());
++    if (size.isEmpty()) {
++        Q_EMIT loadFailed();
++        return;
++    }
 +    QPdfDocumentRenderOptions opts;
 +    m_previewRequestId = m_pdfRenderer->requestPage(pageIndex, size, opts);
 +    m_pendingRequests.insert(m_previewRequestId, m_generation);
@@ -3735,6 +4048,11 @@ index 0000000..55d884c
 +    // Always render the whole page. The overlay stretches the resulting
 +    // pixmap to fill the full page draw-rect, so a partial (clipped)
 +    // render would be distorted; the extra memory is the correct tradeoff.
++    fullSize = boundedRenderSize(fullSize.width(), fullSize.height());
++    if (fullSize.isEmpty()) {
++        m_renderPending = false;
++        return;
++    }
 +    QPdfDocumentRenderOptions opts;
 +    m_hiResRequestId = m_pdfRenderer->requestPage(pageIndex, fullSize, opts);
 +    m_pendingRequests.insert(m_hiResRequestId, m_generation);
@@ -3744,7 +4062,12 @@ index 0000000..55d884c
 +// Private — render callbacks
 +// ---------------------------------------------------------------------------
 +
-+void QuickLookPdfHandler::onPageRendered(int page, QSize imageSize, const QImage &image, QPdfDocumentRenderOptions options, quint64 requestId)
++void QuickLookPdfHandler::onPageRendered(int page,
++                                         QSize imageSize,
++                                         const QImage &image,
++                                         QPdfDocumentRenderOptions options,
++                                         quint64 requestId,
++                                         quint64 rendererGeneration)
 +{
 +    Q_UNUSED(imageSize)
 +    Q_UNUSED(options)
@@ -3753,6 +4076,10 @@ index 0000000..55d884c
 +    // This is the canonical stale-callback filter: covers preview, hi-res,
 +    // and prefetch requests uniformly across document reload, password
 +    // unlock, content-type switch, and cleanup.
++    if (rendererGeneration != m_generation || m_closed) {
++        return;
++    }
++
 +    const auto it = m_pendingRequests.constFind(requestId);
 +    const bool generationMatches = (it != m_pendingRequests.constEnd() && it.value() == m_generation);
 +    if (it != m_pendingRequests.constEnd()) {
@@ -3897,19 +4224,52 @@ index 0000000..55d884c
 +{
 +    // Half resolution for a fast initial render.
 +    const QSize fit = pageFitSize();
-+    return QSize(qMax(1, fit.width() / 2), qMax(1, fit.height() / 2));
++    return boundedRenderSize(qMax(1, fit.width() / 2), qMax(1, fit.height() / 2));
 +}
 +
 +QSize QuickLookPdfHandler::displaySize() const
 +{
 +    const QSize fit = pageFitSize();
-+    return QSize(static_cast<int>(fit.width() * m_devicePixelRatio), static_cast<int>(fit.height() * m_devicePixelRatio));
++    return boundedRenderSize(fit.width() * m_devicePixelRatio, fit.height() * m_devicePixelRatio);
 +}
 +
 +QSize QuickLookPdfHandler::zoomSize(qreal zoomFactor) const
 +{
 +    const QSize base = displaySize();
-+    return QSize(static_cast<int>(base.width() * zoomFactor), static_cast<int>(base.height() * zoomFactor));
++    return boundedRenderSize(base.width() * zoomFactor, base.height() * zoomFactor);
++}
++
++QSize QuickLookPdfHandler::boundedRenderSize(qreal width, qreal height)
++{
++    if (!std::isfinite(width) || !std::isfinite(height) || width <= 0.0 || height <= 0.0) {
++        return {};
++    }
++
++    const qreal pixels = width * height;
++    const qreal scale = std::min({1.0,
++                                  static_cast<qreal>(MaxRenderDimension) / width,
++                                  static_cast<qreal>(MaxRenderDimension) / height,
++                                  std::sqrt(static_cast<qreal>(MaxRenderPixels) / pixels)});
++    return {qMax(1, qFloor(width * scale)), qMax(1, qFloor(height * scale))};
++}
++
++void QuickLookPdfHandler::resetRenderer()
++{
++    if (m_pdfRenderer) {
++        disconnect(m_pdfRenderer, nullptr, this, nullptr);
++        m_pdfRenderer->deleteLater();
++    }
++
++    m_pdfRenderer = new QPdfPageRenderer(this);
++    m_pdfRenderer->setDocument(m_pdfDoc);
++    m_pdfRenderer->setRenderMode(QPdfPageRenderer::RenderMode::MultiThreaded);
++    const quint64 rendererGeneration = m_generation;
++    connect(m_pdfRenderer,
++            &QPdfPageRenderer::pageRendered,
++            this,
++            [this, rendererGeneration](int page, QSize size, const QImage &image, QPdfDocumentRenderOptions options, quint64 requestId) {
++                onPageRendered(page, size, image, options, requestId, rendererGeneration);
++            });
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -3927,6 +4287,10 @@ index 0000000..55d884c
 +
 +void QuickLookPdfHandler::startSpinner()
 +{
++    m_spinnerAngle = 0.0;
++    if (!animationsEnabled()) {
++        return;
++    }
 +    if (!m_spinnerTimer) {
 +        m_spinnerTimer = new QTimer(this);
 +        connect(m_spinnerTimer, &QTimer::timeout, this, [this]() {
@@ -3937,7 +4301,6 @@ index 0000000..55d884c
 +            Q_EMIT requestUpdate();
 +        });
 +    }
-+    m_spinnerAngle = 0.0;
 +    m_spinnerTimer->start(50);
 +}
 +
@@ -3983,10 +4346,10 @@ index 0000000..55d884c
 +}
 diff --git a/src/views/quicklook/quicklookpdfhandler.h b/src/views/quicklook/quicklookpdfhandler.h
 new file mode 100644
-index 0000000..8726a20
+index 0000000..b80d11c
 --- /dev/null
 +++ b/src/views/quicklook/quicklookpdfhandler.h
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,139 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -4061,11 +4424,18 @@ index 0000000..8726a20
 +    // Refuse to open PDFs larger than this on the GUI thread to avoid
 +    // freezing Dolphin on decompression-bomb / pathological files.
 +    // QPdfDocument::load is synchronous for local files.
-+    static constexpr qint64 MaxPdfFileSizeBytes = 256LL * 1024 * 1024; // 256 MiB
++    static constexpr qint64 MaxPdfFileSizeBytes = 64LL * 1024 * 1024; // 64 MiB
++    // QPdfPageRenderer commonly returns 32-bit images. Bound every request to
++    // 64 MiB of pixels, including DPR and zoom renders.
++    static constexpr qint64 MaxRenderBytes = 64LL * 1024 * 1024;
++    static constexpr qint64 MaxRenderPixels = MaxRenderBytes / 4; // QPdfPageRenderer produces 32-bit images.
++    static constexpr int MaxRenderDimension = 16384;
 +
 +    void requestPage(int pageIndex, QSize size);
 +    void requestHiRes(int pageIndex, QSize fullSize);
-+    void onPageRendered(int page, QSize imageSize, const QImage &image, QPdfDocumentRenderOptions options, quint64 requestId);
++    void onPageRendered(int page, QSize imageSize, const QImage &image, QPdfDocumentRenderOptions options, quint64 requestId, quint64 rendererGeneration);
++    void resetRenderer();
++    static QSize boundedRenderSize(qreal width, qreal height);
 +    QSize pageFitSize() const;
 +    QSize previewSize() const;
 +    QSize displaySize() const;
@@ -4115,6 +4485,7 @@ index 0000000..8726a20
 +    bool m_pageLoading = false;
 +    qreal m_spinnerAngle = 0.0;
 +    QTimer *m_spinnerTimer = nullptr;
++    bool m_closed = true;
 +};
 +
 +#endif // QUICKLOOKPDFHANDLER_H

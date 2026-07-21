@@ -517,7 +517,7 @@
         <ul class="nav-links">
             <li><a href="#features">Features</a></li>
             <li><a href="#install">Install</a></li>
-            <li><a href="#comparison">Compare</a></li>
+            <li><a href="#status">Status</a></li>
             <li><a href="https://github.com/pir0c0pter0/dolphin-quicklook" target="_blank" rel="noopener">GitHub</a></li>
         </ul>
     </div>
@@ -530,7 +530,7 @@
             <span class="highlight">Quick Look</span> for KDE Dolphin
         </h1>
         <p class="tagline">
-            macOS-style file preview for Linux. Double-click to preview images, PDFs, videos, and audio — inline, with smooth animations and high-quality rendering.
+            Select a supported local file and press Space to preview images, PDFs, videos, and audio inline. Double-click keeps Dolphin's normal activation behavior.
         </p>
         <div class="hero-buttons">
             <a href="#install" class="btn btn-primary">Get Started</a>
@@ -557,7 +557,7 @@
                 <div class="feature-icon">IMG</div>
                 <span class="feature-tag tag-core">Core</span>
                 <h3>Image Preview</h3>
-                <p>PNG, JPEG, WebP, SVG, AVIF, HEIF, JXL, and every format Qt supports. Transparent images composited with alpha. Large images capped at 4K to prevent OOM.</p>
+                <p>Uses the image formats provided by your installed Qt plugins. Optional formats such as AVIF, HEIF, and JPEG XL depend on those plugins; Quick Look does not bundle codecs.</p>
             </div>
 
             <!-- PDF -->
@@ -565,7 +565,7 @@
                 <div class="feature-icon">PDF</div>
                 <span class="feature-tag tag-optional">Optional</span>
                 <h3>PDF Preview</h3>
-                <p>Multi-page navigation with arrow keys. Password-protected PDF support. LRU page cache, async loading, crossfade transitions, and hi-res re-render on zoom. Powered by Qt PDF.</p>
+                <p>Multi-page navigation, password support, a five-page cache, and asynchronous viewport-sized page rendering through Qt PDF. Local files over 64 MiB are rejected.</p>
             </div>
 
             <!-- Video -->
@@ -589,7 +589,7 @@
                 <div class="feature-icon">QPt</div>
                 <span class="feature-tag tag-gpu">Performance</span>
                 <h3>Pure QPainter Rendering</h3>
-                <p>Zero GPU dependency. Works on every Linux system including VMs, Wayland-only setups, and headless environments. Smooth crossfade transitions, rounded corners, and antialiased rendering.</p>
+                <p>The feature paints through QPainter and does not add an OpenGL path. Dolphin still needs a working Qt graphical session and normal platform support.</p>
             </div>
 
             <!-- HiDPI -->
@@ -613,7 +613,7 @@
                 <div class="feature-icon">FX</div>
                 <span class="feature-tag tag-core">Core</span>
                 <h3>Smooth Animations</h3>
-                <p>250ms cubic ease-out open animation. Fade-out on close. Frame-driven rendering synced to your monitor refresh rate (60Hz to 240Hz+). Crossfade on content switches.</p>
+                <p>250ms cubic ease-out open animation, fade-out on close, and crossfades on content switches. A 16ms timer requests frames; actual cadence depends on the system.</p>
             </div>
 
             <!-- Stability -->
@@ -621,7 +621,7 @@
                 <div class="feature-icon">OK</div>
                 <span class="feature-tag tag-core">Core</span>
                 <h3>Rock Solid</h3>
-                <p>Race condition protection on async renders. Stale result discard. Active-state checks. Enum-based video state machine. Null guards everywhere. No crashes on edge cases.</p>
+                <p>Async render generations discard stale results, with active-state and null checks around content changes. This is an experimental patch, not a crash-free guarantee.</p>
             </div>
         </div>
     </div>
@@ -635,11 +635,11 @@
         <div class="shortcuts-grid">
             <div class="shortcut-row">
                 <span>Open preview</span>
-                <kbd>Double-click</kbd>
+                <kbd>Space</kbd>
             </div>
             <div class="shortcut-row">
                 <span>Close preview</span>
-                <kbd>Escape</kbd> / <kbd>Space</kbd> / <kbd>Double-click</kbd>
+                <kbd>Escape</kbd> / <kbd>Space</kbd>
             </div>
             <div class="shortcut-row">
                 <span>Zoom in / out</span>
@@ -665,106 +665,79 @@
 <section id="install" class="install-section">
     <div class="section-inner">
         <h2 class="section-title">Installation</h2>
-        <p class="section-subtitle">Three commands. Under 5 minutes on a modern machine.</p>
+        <p class="section-subtitle">The patch targets one pinned Dolphin development commit. Install the matching Qt 6 and KDE Frameworks 6 development dependencies first.</p>
 
         <div class="install-block">
             <div class="install-header">
                 <div class="dot dot-red"></div>
                 <div class="dot dot-yellow"></div>
                 <div class="dot dot-green"></div>
-                <span>Terminal</span>
+                <span>Mutable distributions</span>
             </div>
             <pre class="install-code"><span class="comment"># Clone and install</span>
 <span class="prompt">$</span> <span class="cmd">git clone https://github.com/pir0c0pter0/dolphin-quicklook.git</span>
 <span class="prompt">$</span> <span class="cmd">cd dolphin-quicklook</span>
 <span class="prompt">$</span> <span class="cmd">./install.sh</span>
 
-<span class="comment"># The script clones Dolphin source, applies the patch,</span>
-<span class="comment"># builds it, and optionally installs system-wide.</span></pre>
+<span class="comment"># Shallow-fetches the pinned commit, builds, then asks before install.</span>
+<span class="comment"># JOBS=4 ./install.sh limits parallel compilation.</span></pre>
+        </div>
+
+        <div class="install-block" style="margin-top: 24px;">
+            <div class="install-header">
+                <div class="dot dot-red"></div>
+                <div class="dot dot-yellow"></div>
+                <div class="dot dot-green"></div>
+                <span>Atomic Fedora: Bazzite, Kinoite, Silverblue</span>
+            </div>
+            <pre class="install-code"><span class="comment"># /usr is read-only; build in a matching Fedora Toolbx.</span>
+<span class="prompt">$</span> <span class="cmd">./scripts/install-bazzite.sh</span>
+
+<span class="comment"># Optional: rebuild from a vetted local snapshot after Dolphin RPM changes.</span>
+<span class="prompt">$</span> <span class="cmd">./scripts/update-bazzite-hook.sh --install</span></pre>
         </div>
 
         <p style="margin-top: 24px; color: var(--text-secondary); font-size: 0.9rem;">
-            Supports <strong>Arch</strong>, <strong>Fedora</strong>, <strong>Ubuntu/Debian</strong>, <strong>openSUSE</strong>, <strong>Void</strong>, and <strong>Gentoo</strong>.
-            See the <a href="https://github.com/pir0c0pter0/dolphin-quicklook#build-dependencies" target="_blank" rel="noopener">README</a> for dependency details.
+            The atomic hook never downloads or executes a mutable Quick Look branch. Update the checkout, review it, then rerun <code>--install</code> to replace its local snapshot. See the
+            <a href="https://github.com/pir0c0pter0/dolphin-quicklook#compatibility" target="_blank" rel="noopener">README</a> for exact versions and safe uninstall commands.
         </p>
     </div>
 </section>
 
-<!-- Comparison -->
-<section id="comparison">
+<!-- Status -->
+<section id="status">
     <div class="section-inner">
-        <h2 class="section-title">Why not KLook?</h2>
-        <p class="section-subtitle">KLook was the previous Quick Look attempt for KDE. It has been dead since 2020.</p>
+        <h2 class="section-title">Status and scope</h2>
+        <p class="section-subtitle">An experimental patch for a pinned Dolphin snapshot, not an upstream release or a distribution package.</p>
 
         <div style="overflow-x: auto;">
             <table class="comparison-table">
                 <thead>
                     <tr>
-                        <th>Feature</th>
-                        <th class="col-ours">Dolphin Quick Look</th>
-                        <th class="col-klook">KLook</th>
+                        <th>Area</th>
+                        <th class="col-ours">Current contract</th>
                     </tr>
                 </thead>
                 <tbody>
                     <tr>
-                        <td>Status</td>
-                        <td><span class="check">Active development</span></td>
-                        <td><span class="cross">Dead since 2020</span></td>
+                        <td>Source</td>
+                        <td>Pinned Dolphin commit <code>b12eada71266…</code>; arbitrary releases and HEAD are unsupported</td>
                     </tr>
                     <tr>
-                        <td>Toolkit</td>
-                        <td>Qt 6 / KDE Frameworks 6</td>
-                        <td>Qt 4 (EOL)</td>
+                        <td>Build minimums</td>
+                        <td>CMake 3.16, Qt 6.4, KDE Frameworks 6.23, C++20</td>
                     </tr>
                     <tr>
-                        <td>Integration</td>
-                        <td><span class="check">Native — built into Dolphin</span></td>
-                        <td>Separate application (popup window)</td>
+                        <td>Activation</td>
+                        <td>Select one supported local file and press Space</td>
                     </tr>
                     <tr>
-                        <td>Rendering</td>
-                        <td><span class="check">Pure QPainter — 100% compatible</span></td>
-                        <td>Software only</td>
+                        <td>Formats</td>
+                        <td>Depend on optional Qt PDF, Qt Multimedia, image plugins, and system codecs</td>
                     </tr>
                     <tr>
-                        <td>Animations</td>
-                        <td><span class="check">Frame-driven, monitor-synced</span></td>
-                        <td>Basic transitions</td>
-                    </tr>
-                    <tr>
-                        <td>Image formats</td>
-                        <td><span class="check">All Qt-supported (incl. AVIF, HEIF, JXL)</span></td>
-                        <td>Basic (PNG, JPEG)</td>
-                    </tr>
-                    <tr>
-                        <td>PDF support</td>
-                        <td><span class="check">Multi-page, cache, password, async</span></td>
-                        <td><span class="cross">No</span></td>
-                    </tr>
-                    <tr>
-                        <td>Video support</td>
-                        <td><span class="check">Inline playback with looping</span></td>
-                        <td>Basic playback</td>
-                    </tr>
-                    <tr>
-                        <td>Audio visualization</td>
-                        <td><span class="check">Vinyl + real-time FFT spectrum</span></td>
-                        <td><span class="cross">No</span></td>
-                    </tr>
-                    <tr>
-                        <td>Zoom</td>
-                        <td><span class="check">1x-5x, cursor-centered, pan</span></td>
-                        <td><span class="cross">No</span></td>
-                    </tr>
-                    <tr>
-                        <td>HiDPI</td>
-                        <td><span class="check">Full support</span></td>
-                        <td><span class="cross">No</span></td>
-                    </tr>
-                    <tr>
-                        <td>License</td>
-                        <td>GPL-2.0-or-later</td>
-                        <td>GPL-2.0</td>
+                        <td>Updates</td>
+                        <td>Pinned upstream source plus an explicitly installed local Quick Look snapshot</td>
                     </tr>
                 </tbody>
             </table>
