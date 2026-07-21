@@ -147,6 +147,15 @@ It builds Dolphin inside a Toolbx container, installs into `~/.local` (no
 systemd user unit at the patched build. Re-run it any time to rebuild and
 update after pulling a newer patch.
 
+To update Quick Look automatically after the host Dolphin package changes:
+
+```bash
+./scripts/update-bazzite-hook.sh --install
+```
+
+The user service checks once per login. When the Dolphin RPM version changes,
+it downloads the latest Quick Look commit and runs the atomic installer.
+
 ### Manual Install
 
 ```bash

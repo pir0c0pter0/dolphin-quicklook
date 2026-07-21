@@ -265,6 +265,8 @@ UNIT
     else
         warn "systemctl --user unavailable -- reopen Dolphin to pick up the update"
     fi
+
+    trap - RETURN
 }
 
 # ── Main ────────────────────────────────────────────────────────────
