@@ -1,6 +1,6 @@
 # Dolphin Quick Look
 
-Dolphin Quick Look is an experimental patch for KDE Dolphin that previews supported local files inside the file view. Select a file and press `Space`; press `Space` or `Escape` to close the preview.
+Dolphin Quick Look is an experimental patch for KDE Dolphin that previews supported local files inside the file view. Double-click a supported file to preview it; press `Escape` or `Space` to close the preview.
 
 It is not an upstream Dolphin release or a distribution package. The installer builds one pinned Dolphin source revision (`b12eada7126627c43e463b1c1fff191233485d00`) so the patch is reproducible.
 
@@ -10,7 +10,7 @@ It is not an upstream Dolphin release or a distribution package. The installer b
 
 ## Current behavior
 
-- `Space` opens the selected supported local file; it does not replace double-click activation.
+- Double-click opens Quick Look by default. In Dolphin's View settings, it can instead use `Space` and preserve normal double-click activation.
 - Images use the formats provided by the installed Qt image plugins.
 - PDF support is optional and requires Qt PDF. Local PDF documents are loaded synchronously, while page rendering uses `QPdfPageRenderer` in multi-threaded mode. Files larger than 64 MiB are rejected.
 - Video and audio support are optional and require Qt Multimedia plus working system codecs.

@@ -95,6 +95,66 @@ index 4faabe9..b6bca78 100644
  if(HAVE_BALOO)
      target_link_libraries(
          dolphinprivate PUBLIC
+diff --git a/src/settings/dolphin_generalsettings.kcfg b/src/settings/dolphin_generalsettings.kcfg
+index 48fecb2..ab3e2e9 100644
+--- a/src/settings/dolphin_generalsettings.kcfg
++++ b/src/settings/dolphin_generalsettings.kcfg
+@@ -15,6 +15,14 @@
+         <argument type="Bool">showStatusBar</argument>
+     </signal>
+     <group name="General">
++        <entry name="QuickLookActivation" type="Enum">
++            <label>How Quick Look is opened</label>
++            <choices>
++                <choice name="DoubleClick" />
++                <choice name="Space" />
++            </choices>
++            <default>DoubleClick</default>
++        </entry>
+         <entry name="DoubleClickViewAction" type="String">
+             <label>Select Action</label>
+             <default>edit_select_all</default>
+diff --git a/src/settings/viewmodes/generalviewsettingspage.cpp b/src/settings/viewmodes/generalviewsettingspage.cpp
+index fe1f135..66cfb3e 100644
+--- a/src/settings/viewmodes/generalviewsettingspage.cpp
++++ b/src/settings/viewmodes/generalviewsettingspage.cpp
+@@ -96,6 +96,11 @@ GeneralViewSettingsPage::GeneralViewSettingsPage(const QUrl &url, QWidget *paren
+                                         (mime.globPatterns().join(", "))));
+     topLayout->addRow(QString(), m_hideXtrashFiles);
+ 
++    m_quickLookActivation = new QComboBox();
++    m_quickLookActivation->addItem(i18nc("@item:inlistbox", "Double-click"), GeneralSettings::EnumQuickLookActivation::DoubleClick);
++    m_quickLookActivation->addItem(i18nc("@item:inlistbox", "Space key"), GeneralSettings::EnumQuickLookActivation::Space);
++    topLayout->addRow(i18nc("@label:listbox", "Open Quick Look with:"), m_quickLookActivation);
++
+     // --------------------- //
+     // START double click view background
+ 
+@@ -202,3 +207,4 @@ GeneralViewSettingsPage::GeneralViewSettingsPage(const QUrl &url, QWidget *paren
+     connect(m_hideXtrashFiles, &QCheckBox::toggled, this, &GeneralViewSettingsPage::changed);
+     connect(m_dynamicView, &QCheckBox::toggled, this, &GeneralViewSettingsPage::changed);
++    connect(m_quickLookActivation, qOverload<int>(&QComboBox::currentIndexChanged), this, &GeneralViewSettingsPage::changed);
+     connect(m_doubleClickViewCustomAction, &QLineEdit::textChanged, this, &GeneralViewSettingsPage::changed);
+@@ -224,3 +230,4 @@ void GeneralViewSettingsPage::applySettings()
+     settings->setAutoExpandFolders(m_autoExpandFolders->isChecked());
+     settings->setBrowseThroughArchives(m_openArchivesAsFolder->isChecked());
++    settings->setQuickLookActivation(m_quickLookActivation->currentData().toInt());
+     settings->setDoubleClickViewCustomAction(m_doubleClickViewCustomAction->text());
+@@ -257,4 +264,5 @@ void GeneralViewSettingsPage::loadSettings()
+     m_hideXtrashFiles->setChecked(GeneralSettings::hideXTrashFile());
+     m_dynamicView->setChecked(GeneralSettings::dynamicView());
++    m_quickLookActivation->setCurrentIndex(m_quickLookActivation->findData(GeneralSettings::quickLookActivation()));
+ 
+     m_localViewProps->setChecked(!useGlobalViewProps);
+diff --git a/src/settings/viewmodes/generalviewsettingspage.h b/src/settings/viewmodes/generalviewsettingspage.h
+index 77ab004..af0bb76 100644
+--- a/src/settings/viewmodes/generalviewsettingspage.h
++++ b/src/settings/viewmodes/generalviewsettingspage.h
+@@ -52,3 +52,4 @@ private:
+     QCheckBox *m_hideXtrashFiles = nullptr;
+     QCheckBox *m_dynamicView = nullptr;
++    QComboBox *m_quickLookActivation = nullptr;
+     QComboBox *m_doubleClickViewComboBox = nullptr;
 diff --git a/src/dolphintabpage.cpp b/src/dolphintabpage.cpp
 index 7187162..fb4e681 100644
 --- a/src/dolphintabpage.cpp
@@ -190,10 +250,11 @@ index 21e48f2..8439fa3 100644
  #include "views/viewproperties.h"
  #include "views/zoomlevelinfo.h"
  
-@@ -31,6 +33,7 @@
+@@ -31,6 +33,8 @@
  #include <QApplication>
  #include <QDomDocument>
  #include <QFileSystemWatcher>
++#include <QGraphicsView>
 +#include <QImage>
  #include <QKeySequence>
  #include <QScopedPointer>
@@ -206,12 +267,13 @@ index 21e48f2..8439fa3 100644
      void cleanupTestCase();
  
  private:
-@@ -1340,6 +1344,49 @@ void DolphinMainWindowTest::testActiveViewAfterTabSwitchWithSplitView()
+@@ -1340,6 +1344,63 @@ void DolphinMainWindowTest::testActiveViewAfterTabSwitchWithSplitView()
      QVERIFY(!firstTabPage->primaryViewContainer()->isActive());
  }
  
 +void DolphinMainWindowTest::testQuickLookSpaceAndLifecycle()
 +{
++    GeneralSettings::setQuickLookActivation(GeneralSettings::EnumQuickLookActivation::DoubleClick);
 +    TestDir testDir;
 +    const QUrl imageUrl = QUrl::fromLocalFile(testDir.filePath(QStringLiteral("preview.png")));
 +    const QUrl textUrl = QUrl::fromLocalFile(testDir.filePath(QStringLiteral("plain.txt")));
@@ -238,13 +300,26 @@ index 21e48f2..8439fa3 100644
 +
 +    view->forceUrlsSelection(imageUrl, {imageUrl});
 +    view->updateViewState();
++    auto *controller = view->itemListContainer()->controller();
++    auto *graphicsView = qobject_cast<QGraphicsView *>(view->itemListContainer()->viewport());
++    const int imageIndex = static_cast<KFileItemModel *>(controller->model())->index(imageUrl);
++    QVERIFY(graphicsView);
++    QVERIFY(imageIndex >= 0);
++    QTest::mouseDClick(graphicsView->viewport(), Qt::LeftButton, Qt::NoModifier,
++                       graphicsView->mapFromScene(controller->view()->itemRect(imageIndex).center()));
++    QVERIFY(overlay->isPreviewActive());
++
++    auto *quickLookController = tabPage->findChild<QuickLookController *>();
++    QVERIFY(quickLookController);
++    quickLookController->closePreview();
++    QTRY_VERIFY(!overlay->isPreviewActive());
++
++    GeneralSettings::setQuickLookActivation(GeneralSettings::EnumQuickLookActivation::Space);
 +    QTest::keyClick(view->itemListContainer(), Qt::Key_Space);
 +    QVERIFY(overlay->isPreviewActive());
 +
-+    auto *controller = tabPage->findChild<QuickLookController *>();
-+    QVERIFY(controller);
-+    controller->closePreview();
-+    controller->closePreview();
++    quickLookController->closePreview();
++    quickLookController->closePreview();
 +    QTRY_VERIFY(!overlay->isPreviewActive());
 +
 +    QTest::keyClick(view->itemListContainer(), Qt::Key_Space);
@@ -508,7 +583,7 @@ new file mode 100644
 index 0000000..93eb5c2
 --- /dev/null
 +++ b/src/views/quicklook/quicklookcontroller.cpp
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,214 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -517,13 +592,19 @@ index 0000000..93eb5c2
 +
 +#include "quicklookcontroller.h"
 +
++#include "dolphin_generalsettings.h"
 +#include "kitemviews/kitemlistcontainer.h"
++#include "kitemviews/kitemlistcontroller.h"
++#include "kitemviews/kitemlistselectionmanager.h"
++#include "kitemviews/kitemlistview.h"
 +#include "quicklookcontenthandler.h"
 +#include "quicklookoverlay.h"
 +#include "views/dolphinview.h"
 +
 +#include <QEvent>
++#include <QGraphicsView>
 +#include <QKeyEvent>
++#include <QMouseEvent>
 +#include <QResizeEvent>
 +
 +#include <utility>
@@ -574,6 +655,10 @@ index 0000000..93eb5c2
 +        m_overlay->resize(container->size());
 +    }
 +    container->installEventFilter(this);
++    if (auto *graphicsView = qobject_cast<QGraphicsView *>(container->viewport())) {
++        m_mouseTarget = graphicsView->viewport();
++        m_mouseTarget->installEventFilter(this);
++    }
 +    if (m_window) {
 +        // Dolphin binds unmodified Space to Selection Mode. Accepting the
 +        // ShortcutOverride here lets the subsequent KeyPress reach the view
@@ -594,6 +679,9 @@ index 0000000..93eb5c2
 +    if (m_container) {
 +        m_container->removeEventFilter(this);
 +    }
++    if (m_mouseTarget) {
++        m_mouseTarget->removeEventFilter(this);
++    }
 +    if (m_window) {
 +        m_window->removeEventFilter(this);
 +    }
@@ -608,6 +696,7 @@ index 0000000..93eb5c2
 +    }
 +
 +    m_container.clear();
++    m_mouseTarget.clear();
 +    m_window.clear();
 +    m_view.clear();
 +}
@@ -628,11 +717,24 @@ index 0000000..93eb5c2
 +        return QObject::eventFilter(watched, event);
 +    }
 +
-+    if (watched == m_window && event->type() == QEvent::ShortcutOverride) {
++    const bool useSpace = GeneralSettings::quickLookActivation() == GeneralSettings::EnumQuickLookActivation::Space;
++    if (useSpace && watched == m_window && event->type() == QEvent::ShortcutOverride) {
 +        auto *keyEvent = static_cast<QKeyEvent *>(event);
 +        if (keyEvent->key() == Qt::Key_Space && keyEvent->modifiers() == Qt::NoModifier && !keyEvent->isAutoRepeat()
 +            && (m_overlay->isPreviewActive() || canPreviewSelection())) {
 +            keyEvent->accept();
++            return true;
++        }
++        return QObject::eventFilter(watched, event);
++    }
++
++    if (watched == m_mouseTarget && !useSpace && event->type() == QEvent::MouseButtonDblClick) {
++        const auto *mouseEvent = static_cast<QMouseEvent *>(event);
++        auto *graphicsView = qobject_cast<QGraphicsView *>(m_container->viewport());
++        KItemListController *controller = m_container->controller();
++        const auto clickedIndex = controller->view()->itemAt(graphicsView->mapToScene(mouseEvent->position().toPoint()));
++        if (mouseEvent->button() == Qt::LeftButton && clickedIndex
++            && controller->selectionManager()->selectedItems().contains(*clickedIndex) && showSelection()) {
 +            return true;
 +        }
 +        return QObject::eventFilter(watched, event);
@@ -645,16 +747,9 @@ index 0000000..93eb5c2
 +    switch (event->type()) {
 +    case QEvent::KeyPress: {
 +        const auto *keyEvent = static_cast<QKeyEvent *>(event);
-+        if (keyEvent->key() == Qt::Key_Space && keyEvent->modifiers() == Qt::NoModifier && !keyEvent->isAutoRepeat()
-+            && !m_overlay->isPreviewActive()) {
-+            const KFileItemList selectedItems = m_view->selectedItems();
-+            if (canPreviewSelection()) {
-+                m_overlay->resize(m_container->size());
-+                if (m_overlay->showPreview(selectedItems.constFirst().url())) {
-+                    m_closing = false;
-+                    return true;
-+                }
-+            }
++        if (useSpace && keyEvent->key() == Qt::Key_Space && keyEvent->modifiers() == Qt::NoModifier && !keyEvent->isAutoRepeat()
++            && showSelection()) {
++            return true;
 +        }
 +        break;
 +    }
@@ -668,6 +763,19 @@ index 0000000..93eb5c2
 +    }
 +
 +    return QObject::eventFilter(watched, event);
++}
++
++bool QuickLookController::showSelection()
++{
++    if (m_overlay->isPreviewActive() || !canPreviewSelection()) {
++        return false;
++    }
++    m_overlay->resize(m_container->size());
++    if (!m_overlay->showPreview(m_view->selectedItems().constFirst().url())) {
++        return false;
++    }
++    m_closing = false;
++    return true;
 +}
 +
 +bool QuickLookController::canPreviewSelection() const
@@ -695,7 +803,7 @@ new file mode 100644
 index 0000000..31565c1
 --- /dev/null
 +++ b/src/views/quicklook/quicklookcontroller.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,71 @@
 +/*
 + * SPDX-FileCopyrightText: 2026 Pir0c0pter0
 + *
@@ -718,7 +826,7 @@ index 0000000..31565c1
 +class QWidget;
 +
 +/**
-+ * Owns the QuickLook overlay widget and handles Space and resize events.
++ * Owns the QuickLook overlay widget and handles its configured activation and resize events.
 + * The controller follows a single DolphinView at a
 + * time via attachToView() — DolphinTabPage retargets it whenever the
 + * active pane changes in split view.
@@ -752,9 +860,11 @@ index 0000000..31565c1
 +
 +private:
 +    bool canPreviewSelection() const;
++    bool showSelection();
 +
 +    QPointer<DolphinView> m_view;
 +    QPointer<KItemListContainer> m_container;
++    QPointer<QWidget> m_mouseTarget;
 +    QPointer<QWidget> m_window;
 +    // Overlay is owned by the controller. QPointer guards against the
 +    // container being destroyed before the controller (in which case Qt

@@ -387,7 +387,7 @@ main() {
     echo
     ok "Done. Dolphin Quick Look is installed at $PREFIX/bin/dolphin"
     info "Close every open Dolphin window and reopen it to pick up the update."
-    info "Select a supported local file and press Space to open Quick Look."
+    info "Double-click a supported local file to open Quick Look."
     info "Uninstall with: $SCRIPT_DIR/install-bazzite.sh --uninstall"
 }
 

@@ -5,16 +5,16 @@ This guide describes the patched build in this repository, not stock Dolphin.
 ## Open and close
 
 1. Select one supported local file in Dolphin.
-2. Press `Space` to open the inline preview.
+2. Double-click it to open the inline preview.
 3. Press `Space` or `Escape` to close it.
 
-Double-click keeps Dolphin's normal file-activation behavior. Remote URLs are not previewed. Unsupported or unavailable formats remain unopened by Quick Look.
+Choose **Double-click** (default) or **Space key** under **Configure Dolphin → View → Open Quick Look with**. Remote URLs are not previewed. Unsupported or unavailable formats keep Dolphin's normal behavior.
 
 ## Controls
 
 | Input | Result |
 |---|---|
-| `Space` | Open the selected supported local file; close an active preview |
+| Double-click or `Space` | Open the selected supported local file, according to the configured activation method |
 | `Escape` | Close an active preview |
 | Wheel | Zoom image or PDF from 1x to 5x |
 | Left drag | Pan while zoomed |
@@ -66,9 +66,10 @@ Dolphin remains a graphical Qt application. Software painting removes an OpenGL-
 
 ## Troubleshooting
 
-### Space does nothing
+### The configured activation does nothing
 
 - Confirm this is the patched binary: on atomic Fedora it is `$HOME/.local/bin/dolphin`.
+- Confirm the intended method under **Configure Dolphin → View → Open Quick Look with**.
 - Confirm one local file is selected.
 - Close all Dolphin windows and restart the `plasma-dolphin.service` user service, or log out and back in.
 - Rebuild after pulling changes; the patch is tied to the pinned Dolphin commit.
