@@ -64,7 +64,10 @@ UNIT
 
     dolphin_version > "$STATE_FILE"
     systemctl --user daemon-reload
-    systemctl --user enable --now "$UNIT_NAME"
+    # The current package version was recorded above, so an immediate oneshot
+    # run would be redundant. Enabling without --now also avoids making the
+    # installer wait on a service that uses the same update lock.
+    systemctl --user enable "$UNIT_NAME"
     echo "Installed $UNIT_NAME with local snapshot $SNAPSHOT_DIR"
 }
 
@@ -92,8 +95,11 @@ check_update() {
 mkdir -p "$STATE_DIR"
 chmod 700 "$STATE_DIR"
 command -v flock >/dev/null 2>&1 || { echo "flock is required." >&2; exit 1; }
-exec 9>"$LOCK_FILE"
-flock 9
+if [[ "${DQL_LOCK_HELD:-0}" != 1 ]]; then
+    # Keep the descriptor out of the installer and its long-lived Toolbx
+    # container; conmon inheriting it would block every future update.
+    exec flock --close "$LOCK_FILE" env DQL_LOCK_HELD=1 "$0" "$@"
+fi
 
 case "${1:-}" in
     "") check_update ;;
