@@ -34,6 +34,7 @@ DOLPHIN_SRC="$BUILD_DIR/dolphin"
 
 PREFIX="$HOME/.local"
 TOOLBOX="dolphin-quicklook"   # dedicated Toolbx build container
+TOOLBOX_RELEASE="${TOOLBOX_RELEASE:-}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/dolphin-quicklook"
 MANIFEST="$STATE_DIR/install-manifest.txt"
 LOCK_FILE="$STATE_DIR/build.lock"
@@ -56,6 +57,9 @@ Usage: $(basename "$0") [--uninstall]
 
 Build the Dolphin Quick Look patch in a Toolbx container and install it
 into ~/.local on an atomic Fedora desktop. Re-run to update.
+
+Set TOOLBOX_RELEASE to build against an older compatible Fedora userspace
+when the host image temporarily lags behind the matching Fedora repositories.
 
 Use --uninstall to remove only files installed by this build and its user units.
 For a normal (mutable) distribution use ../install.sh.
@@ -103,9 +107,13 @@ preflight() {
         || error "'realpath' not found on the host."
     command -v flock >/dev/null 2>&1 \
         || error "'flock' not found on the host."
+    command -v ldd >/dev/null 2>&1 \
+        || error "'ldd' not found on the host."
 
     JOBS="${JOBS:-$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
     [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || error "JOBS must be a positive integer."
+    [[ -z "$TOOLBOX_RELEASE" || "$TOOLBOX_RELEASE" =~ ^[0-9]+$ ]] \
+        || error "TOOLBOX_RELEASE must be a Fedora release number."
 
     # Read the pinned Dolphin commit/repo from install.sh so the two
     # installers share a single source of truth and never drift apart.
@@ -123,25 +131,26 @@ ensure_toolbox() {
     # podman container of the same name is not mistaken for ours.
     # A named Toolbx survives host upgrades. Recreate this dedicated build
     # container when its Fedora release no longer matches the host.
-    local host_release container_release=''
+    local host_release container_release='' target_release
     # shellcheck disable=SC1091
     . /etc/os-release
     host_release="${VERSION_ID:-}"
     [[ -n "$host_release" ]] || error "Host VERSION_ID is missing from /etc/os-release."
+    target_release="${TOOLBOX_RELEASE:-$host_release}"
     if toolbox list --containers 2>/dev/null | grep -qw "$TOOLBOX"; then
         # VERSION_ID must expand inside Toolbx.
         # shellcheck disable=SC2016
         container_release="$(toolbox run -c "$TOOLBOX" sh -c '. /etc/os-release; printf %s "${VERSION_ID:-}"' 2>/dev/null || true)"
-        if [[ "$container_release" != "$host_release" ]]; then
-            warn "Recreating Toolbx '$TOOLBOX' ($container_release -> $host_release)."
+        if [[ "$container_release" != "$target_release" ]]; then
+            warn "Recreating Toolbx '$TOOLBOX' ($container_release -> $target_release)."
             toolbox rm -f "$TOOLBOX" || error "could not remove stale Toolbx"
         else
-            info "Toolbx container '$TOOLBOX' matches Fedora $host_release"
+            info "Toolbx container '$TOOLBOX' uses Fedora $target_release"
         fi
     fi
-    if [[ "$container_release" != "$host_release" ]]; then
-        info "Creating Fedora $host_release Toolbx '$TOOLBOX'..."
-        toolbox create -y --distro fedora --release "$host_release" "$TOOLBOX" || error "toolbox create failed"
+    if [[ "$container_release" != "$target_release" ]]; then
+        info "Creating Fedora $target_release Toolbx '$TOOLBOX'..."
+        toolbox create -y --distro fedora --release "$target_release" "$TOOLBOX" || error "toolbox create failed"
     fi
 
     # Always (re)provision deps: dnf is idempotent, so this completes a
@@ -156,8 +165,8 @@ DEPS
     ok "Build dependencies ready"
 }
 
-# ── Build & install (inside the container) ──────────────────────────
-build_and_install() {
+# ── Build, host compatibility check, and install ───────────────────
+build_dolphin() {
     info "Preparing a clean Dolphin checkout under $BUILD_DIR ..."
     rm -rf "$BUILD_DIR"
     mkdir -p "$DOLPHIN_SRC"
@@ -192,12 +201,34 @@ cmake .. -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_BUILD_TYPE=Release -DBUILD_TES
 echo "[INFO] compiling with JOBS=$JOBS..."
 cmake --build . -j"$JOBS"
 
-echo "[INFO] installing to $PREFIX ..."
-cmake --install .
 BUILD
     then
-        error "build/install failed inside the container"
+        error "build failed inside the container"
     fi
+}
+
+verify_host_runtime() {
+    local binary="$DOLPHIN_SRC/build/bin/dolphin" linkage=''
+    [[ -x "$binary" ]] || error "expected build output missing: $binary"
+
+    # Toolbx repositories can move ahead of an rpm-ostree deployment even
+    # when both report the same Fedora release. Resolve every relocation on
+    # the host before touching ~/.local so a newer Qt/KF ABI cannot replace a
+    # working install. Do not execute the GUI binary: even --version can open
+    # a configuration dialog and wait indefinitely.
+    if ! linkage="$(LC_ALL=C env -u LD_LIBRARY_PATH -u LD_PRELOAD \
+            ldd -r "$binary" 2>&1)" \
+       || grep -Eq 'not found|undefined symbol:' <<<"$linkage"; then
+        printf '%s\n' "$linkage" >&2
+        error "built Dolphin is incompatible with the host runtime; retry with a compatible TOOLBOX_RELEASE"
+    fi
+    ok "Host runtime compatibility check passed"
+}
+
+install_build() {
+    info "Installing to $PREFIX ..."
+    toolbox run -c "$TOOLBOX" cmake --install "$DOLPHIN_SRC/build" \
+        || error "install failed inside the container"
     mkdir -p "$STATE_DIR"
     install -m 600 "$DOLPHIN_SRC/build/install_manifest.txt" "$MANIFEST"
     ok "Dolphin Quick Look built and installed to $PREFIX"
@@ -334,8 +365,10 @@ main() {
     mkdir -p "$STATE_DIR"
     chmod 700 "$STATE_DIR"
     if [[ "${DQL_LOCK_HELD:-0}" != 1 ]]; then
-        exec 9>"$LOCK_FILE"
-        flock 9
+        # Keep the lock in flock's parent process and close its descriptor in
+        # this script. Otherwise Toolbx/conmon inherits it and can block every
+        # later update for the lifetime of the container.
+        exec flock --close "$LOCK_FILE" env DQL_LOCK_HELD=1 "$0" "$@"
     fi
     preflight
     if [[ "${1:-}" == --uninstall ]]; then
@@ -346,7 +379,9 @@ main() {
         exit 2
     fi
     ensure_toolbox
-    build_and_install
+    build_dolphin
+    verify_host_runtime
+    install_build
     fix_launchers
 
     echo

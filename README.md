@@ -77,10 +77,19 @@ cd dolphin-quicklook
 It:
 
 - verifies the host is OSTree-booted;
-- creates a dedicated Fedora Toolbx matching the host `VERSION_ID`, recreating only that dedicated container after a release mismatch;
+- creates a dedicated Fedora Toolbx matching the host `VERSION_ID` by default, recreating only that dedicated container after a release mismatch;
+- validates the built binary against the host Qt/KF runtime before replacing the current install;
 - builds with `BUILD_TESTING=OFF` and optional `JOBS`;
 - installs to a real, non-symlinked `$HOME/.local` without `sudo`;
 - points the desktop launcher and Dolphin user service at the user build.
+
+An rpm-ostree deployment can temporarily lag behind the matching Fedora
+repositories. If the host-runtime check reports a newer Qt/KF ABI, select an
+older compatible build userspace explicitly, for example:
+
+```bash
+TOOLBOX_RELEASE=42 ./scripts/install-bazzite.sh
+```
 
 The mutable and atomic flows are intentionally separate.
 
